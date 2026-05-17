@@ -1,9 +1,9 @@
 ###############################################################################
 # PROJECT NAME CONFIGURATION
 ###############################################################################
-# Name: finpilot
+# Name: server4home
 #
-# IMPORTANT: Change "finpilot" above to your desired project name.
+# IMPORTANT: Change "server4home" above if using this as a template for a new project.
 # This name should be used consistently throughout the repository in:
 #   - Justfile: export image_name := env("IMAGE_NAME", "your-name-here")
 #   - README.md: # your-name-here (title)

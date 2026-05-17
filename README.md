@@ -12,15 +12,57 @@ This template uses the **multi-stage build architecture** from , combining resou
 
 ## Guided Copilot Mode
 
-Here are the steps to guide copilot to make your own repo, or just use it like a regular image template.
+This repository can be used as a template in two ways:
 
-1. Click the green "Use this as a template" button and create a new repository
+### Option 1: Use GitHub's Template Feature (Recommended for Customization)
+
+1. Click the green "Use this as a template" button on GitHub and create a new repository
 2. Select your owner, pick a repo name for your OS, and a description
-3. In the "Jumpstart your project with Copilot (optional)" add this, modify to your liking:
+3. In the "Jumpstart your project with Copilot (optional)" field, add:
 
 ```
-Use @projectbluefin/server4home as a template, name the OS the repository name. Ensure the entire operating system is bootstrapped. Ensure all github actions are enabled and running.  Ensure the README has the github setup instructions for cosign and the other steps required to finish the task.
+Use @projectbluefin/server4home as a template, name the OS the repository name. Ensure the entire operating system is bootstrapped. Ensure all github actions are enabled and running. Ensure the README has the github setup instructions for cosign and the other steps required to finish the task.
 ```
+
+GitHub Copilot will automatically:
+- Bootstrap your repository
+- Configure all GitHub Actions workflows
+- Update the README with your project name
+- Prepare everything for your first build
+
+### Option 2: Use Directly as a Template
+
+Clone this repository and customize it manually by following the "Quick Start" section below.
+
+## What's Different
+
+This is a **custom bootc image template** based on Universal Blue's architecture. By default, it includes:
+
+### System Foundation
+- **Base Image**: Fedora Silverblue (GNOME desktop included)
+- **Container Runtime**: Podman pre-configured and optimized
+- **Package Manager**: DNF5 for system-level packages, Homebrew for CLI tools
+
+### Pre-Configured Tools
+- **Desktop Environment**: GNOME (can be replaced with KDE, COSMIC, etc.)
+- **Development Ready**: Git, podman, and build tools included
+- **System Utilities**: Standard Unix tools and utilities
+
+### Customization Points
+- Add system packages via `build/10-build.sh` (build-time)
+- Add CLI tools via `custom/brew/` Brewfiles (runtime)
+- Add GUI apps via `custom/flatpaks/` (post-first-boot)
+- Add user shortcuts via `custom/ujust/` commands (runtime)
+
+### What Makes This Different From Bluefin
+
+**You're not modifying Bluefin** — you're assembling your own bootc image using the same architecture Bluefin uses. This is:
+- **More Flexible**: Customize everything without forking
+- **Better Maintained**: Use shared components from @projectbluefin/common
+- **Easy to Update**: Renovate automatically keeps base images current
+- **Production Ready**: Full build system, CI/CD, signing, and SBOM support
+
+---
 
 ## What's Included
 
@@ -107,12 +149,12 @@ Customize your apps:
 All changes should be made via pull requests:
 
 1. Open a pull request on GitHub with the change you want.
-3. The PR will automatically trigger:
+2. The PR will automatically trigger:
    - Build validation
    - Brewfile, Flatpak, Justfile, and shellcheck validation
    - Test image build
-4. Once checks pass, merge the PR
-5. Merging triggers publishes a `:stable` image
+3. Once checks pass, merge the PR
+4. Merging triggers publication of a `:stable` image
 
 ### 6. Deploy Your Image
 
@@ -121,6 +163,43 @@ Switch to your image:
 sudo bootc switch ghcr.io/your-username/your-repo-name:stable
 sudo systemctl reboot
 ```
+
+## GitHub Setup Complete Checklist
+
+After creating your repository, ensure these steps are completed:
+
+- [ ] **Enable GitHub Actions** - Go to Actions tab, click "I understand my workflows, go ahead and enable them"
+- [ ] **Verify Initial Build** - Watch the first build complete (check Actions tab)
+- [ ] **Check Build Output** - View logs to ensure no errors
+- [ ] **Verify Package Registry** - Go to repository → Packages section, confirm `server4home` image appears
+- [ ] **Make Test Commit** - Push a small change to verify PR workflow works
+- [ ] **Configure Renovate** (optional) - Renovate automatically updates base image tags
+  - Already configured in `.github/renovate.json5`
+  - Check for Renovate PR if enabled by repository admin
+- [ ] **Plan Image Signing** (for production) - See "Optional: Enable Image Signing" section below
+- [ ] **Update Documentation** - Customize README.md with your OS details
+
+### Git Configuration (First Time Only)
+
+If you haven't configured git locally yet:
+
+```bash
+git config user.email "your-email@example.com"
+git config user.name "Your Name"
+```
+
+For GitHub-based email (if using noreply):
+```bash
+git config user.email "your-gh-username+your-id@users.noreply.github.com"
+```
+
+### Build Triggers
+
+Your image automatically builds on:
+- **Push to main** - Triggers `:stable` build
+- **Pull requests** - Test build (not pushed to registry)
+- **Daily** - Scheduled build at 10:05 UTC (see `.github/workflows/build.yml`)
+- **Manual** - Click "Run workflow" in Actions tab
 
 ## Optional: Enable Image Signing
 
