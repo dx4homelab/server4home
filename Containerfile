@@ -27,11 +27,13 @@
 #    - @ublue-os/brew - Homebrew integration
 #
 # 2. Base Image Options:
-#    - `quay.io/ucore/ucore:latest` (CentOS-based, currently selected)
+#    - `ghcr.io/ublue-os/ucore-hci:latest` (uCore HCI, CentOS-based, currently selected)
+#    - `ghcr.io/ublue-os/ucore-server:latest` (uCore Server)
 #    - `ghcr.io/ublue-os/silverblue-main:latest` (Fedora and GNOME)
 #    - `ghcr.io/ublue-os/base-main:latest` (Fedora and no desktop)
 #    - `quay.io/centos-bootc/centos-bootc:stream10` (CentOS-based)
 #
+# See: https://github.com/ublue-os/ucore for uCore documentation
 # See: https://docs.projectbluefin.io/contributing/ for architecture diagram
 ###############################################################################
 
@@ -45,10 +47,11 @@ COPY custom /custom
 COPY --from=ghcr.io/projectbluefin/common:latest@sha256:b8fe93b16674a547b4cf38493af19caa484d9575956fc3be04ca3d10faec23ff /system_files /oci/common
 COPY --from=ghcr.io/ublue-os/brew:latest@sha256:ca91068f51ce663d495ccfc829352d6621ec95f6c7db447ade55023b222f9762 /system_files /oci/brew
 
-# Base Image - ucore (CentOS-based)
-FROM quay.io/ucore/ucore:latest
+# Base Image - uCore HCI (CentOS-based, hardened)
+FROM ghcr.io/ublue-os/ucore-hci:latest
 
-## Alternative base images (uncomment to use):
+## Alternative uCore variants (uncomment to use):
+# FROM ghcr.io/ublue-os/ucore-server:latest (uCore Server)
 # FROM ghcr.io/ublue-os/silverblue-main:latest (Fedora-based, GNOME)
 # FROM ghcr.io/ublue-os/base-main:latest (Fedora-based, no desktop)
 # FROM quay.io/centos-bootc/centos-bootc:stream10 (CentOS-based, no customization)
