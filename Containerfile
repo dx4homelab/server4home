@@ -48,7 +48,7 @@ COPY --from=ghcr.io/projectbluefin/common:latest@sha256:b8fe93b16674a547b4cf3849
 COPY --from=ghcr.io/ublue-os/brew:latest@sha256:ca91068f51ce663d495ccfc829352d6621ec95f6c7db447ade55023b222f9762 /system_files /oci/brew
 
 # Base Image - uCore HCI (CentOS-based, hardened)
-FROM ghcr.io/ublue-os/ucore-hci:latest
+FROM ghcr.io/ublue-os/ucore-hci:latest@sha256:f608f81814111666a25da31411067b70126129c9c35a95d64279ed2c5a7d8607
 
 ## Alternative uCore variants (uncomment to use):
 # FROM ghcr.io/ublue-os/ucore-server:latest (uCore Server)
