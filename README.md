@@ -129,10 +129,16 @@ Note: Image signing is disabled by default. Your images will build successfully 
 
 ### 4. Customize Your Image
 
-Choose your base image in `Containerfile` (line 23):
+Choose your base image in `Containerfile` (currently set to ucore):
 ```dockerfile
-FROM ghcr.io/ublue-os/bluefin:stable
+FROM quay.io/ucore/ucore:latest
 ```
+
+**Other available base images:**
+- `ghcr.io/ublue-os/silverblue-main:latest` - Fedora-based with GNOME
+- `ghcr.io/ublue-os/bluefin:stable` - Fedora-based dev image
+- `quay.io/centos-bootc/centos-bootc:stream10` - CentOS-based
+- `quay.io/gnome_infrastructure/gnome-build-meta:gnomeos-nightly` - GNOME OS
 
 Add your packages in `build/10-build.sh`:
 ```bash
