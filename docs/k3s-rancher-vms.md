@@ -10,27 +10,41 @@ data-disk pattern, and day-2 operations.
 
 ```mermaid
 flowchart LR
-    A[Containerfile<br/>base layer] -->|just build| B[localhost/<br/>server4home:stable]
-    B -->|FROM in<br/>Containerfile.k3s| C[localhost/<br/>server4home-k3s:stable]
-    C -->|just rebuild-vm-k3s<br/>bootc-image-builder| D[output/qcow2/<br/>disk.qcow2]
-    D -->|scp / virsh| E1[Proxmox VM]
-    D -->|just import-libvirt| E2[libvirt VM<br/>local testing]
+    A[Containerfile<br/>base layer] -->|just build| B[server4home:stable]
+    B -->|FROM in<br/>Containerfile.k3s| C[server4home-k3s:stable]
+    C -->|FROM in<br/>Containerfile.rancher| C2[server4home-rancher:stable]
+    C -->|just rebuild-vm-k3s| D1[output/qcow2/disk.qcow2<br/>K3s flavor]
+    C2 -->|just rebuild-vm-rancher| D2[output/qcow2/disk.qcow2<br/>Rancher flavor]
+    D1 -->|scp / virt-install| E[VM<br/>libvirt or Proxmox]
+    D2 -->|scp / virt-install| E
 ```
 
 - Base layer = ucore-hci (Fedora CoreOS 43) + your customizations.
-- K3s layer = base + `/usr/bin/k3s` + systemd unit + first-boot LVM setup.
-- BIB converts the OCI container image into a bootable qcow2 (xfs root).
+- K3s layer = base + `/usr/bin/k3s` + systemd unit + first-boot LVM setup +
+  hostname/IFRA services.
+- Rancher layer = K3s layer + `/usr/bin/helm` + first-boot oneshot that
+  helm-installs cert-manager and Rancher Manager.
+- BIB converts the chosen OCI container image into a bootable qcow2 (xfs root).
 
 ### Build commands
 
 ```bash
-just build-k3s                       # base + K3s container image
-just rebuild-vm-k3s                  # forces build-k3s, then BIB → output/qcow2/disk.qcow2
-just rebuild-vm-k3s stable v1.35.4+k3s1   # pin a different K3s version
+# K3s flavor
+just build-k3s                              # base + K3s container image
+just rebuild-vm-k3s                         # build-k3s + BIB → output/qcow2/disk.qcow2
+just rebuild-vm-k3s stable v1.35.4+k3s1     # pin a different K3s version
+
+# Rancher flavor (K3s + cert-manager + Rancher Manager auto-installed on first boot)
+just build-rancher                          # base + K3s + Rancher container image
+just rebuild-vm-rancher                     # build-rancher + BIB → output/qcow2/disk.qcow2
+just rebuild-vm-rancher stable v3.21.0      # pin a different Helm version
 ```
 
-The default K3s version pin lives in [Containerfile.k3s](../Containerfile.k3s) and
-[Justfile](../Justfile) (`build-k3s` recipe).
+Default version pins live in the respective Containerfiles:
+[Containerfile.k3s](../Containerfile.k3s) (K3s) and
+[Containerfile.rancher](../Containerfile.rancher) (Helm). cert-manager and
+Rancher chart versions are pinned in
+[build/rancher/files/usr/libexec/server4home/rancher-bootstrap.sh](../build/rancher/files/usr/libexec/server4home/rancher-bootstrap.sh).
 
 ---
 
@@ -69,30 +83,41 @@ local-path-provisioner persistent volumes.
 
 ```mermaid
 sequenceDiagram
-    participant kernel
     participant systemd
-    participant setup as setup-rancher-data.service
+    participant hostname as server4home-hostname.service
+    participant data as setup-rancher-data.service
+    participant ifra as server4home-ifra-register.service
     participant k3s as k3s.service
 
-    kernel->>systemd: hand off to PID 1
-    systemd->>setup: After local-fs.target, Before k3s.service
-    setup->>setup: scan disks for one with no signature
-    alt unformatted disk found
-        setup->>setup: pvcreate → vgcreate rancher → lvcreate data
-        setup->>setup: mkfs.xfs, mount /var/lib/rancher, write fstab
-    else VG rancher already exists
-        setup->>setup: vgchange -ay, mount
-    else no candidate
-        setup->>setup: skip (k3s will use root disk)
+    systemd->>hostname: read SMBIOS product (set by deploy script)
+    hostname->>hostname: hostnamectl set-hostname <name>-<8hex of machine-id>
+    hostname-->>systemd: done
+
+    systemd->>data: scan for an unformatted secondary disk
+    alt disk found
+        data->>data: pvcreate → vgcreate rancher → lvcreate data → xfs → mount
+    else VG rancher exists
+        data->>data: vgchange -ay, mount
+    else no disk
+        data->>data: skip (k3s uses root disk)
     end
-    setup-->>systemd: oneshot done
-    systemd->>k3s: After=setup-rancher-data.service
-    k3s->>k3s: read /etc/server4home/k3s.conf (if any)
-    k3s->>k3s: exec `k3s $K3S_MODE`  (default: server)
+    data-->>systemd: done
+
+    par independent of k3s
+        systemd->>ifra: POST mac+hostname to IFRA inventory (best-effort)
+        ifra-->>systemd: success → write sentinel / failure → log and continue
+    and
+        systemd->>k3s: After=server4home-hostname.service<br/>+ setup-rancher-data.service
+        k3s->>k3s: read /etc/server4home/k3s.conf (if any)
+        k3s->>k3s: exec `k3s $K3S_MODE`  (default: server)
+    end
 ```
 
-Idempotent on every boot. If you ever boot the VM without a data disk, K3s just
-runs on the root disk — no failure, no surprises.
+All four services are idempotent. The hostname service no-ops if the host
+already has a non-`localhost` name. The data service no-ops if `/var/lib/rancher`
+is already mounted. The IFRA service writes a sentinel on success so it does
+not re-POST on every boot. K3s starts only after the first two have completed
+— its node name is the just-assigned hostname, so it registers correctly.
 
 ---
 
@@ -137,6 +162,33 @@ it up automatically.
 See `./create-rancher-vm.sh --help` for all options (bridge, storage, VLAN,
 `--dry-run`, etc.).
 
+### Hostname source
+
+Both deploy paths inject the VM name into SMBIOS (`virt-install --sysinfo
+system.product=…` / `qm set --smbios1 product=…`). On first boot,
+`server4home-hostname.service` reads it from `/sys/class/dmi/id/product_name`
+and sets the hostname to `<vm-name>-<8-hex-from-machine-id>`. Examples:
+
+- `just import-libvirt rancher-cp-01 …` → hostname `rancher-cp-01-3f9ab21c`
+- `create-rancher-vm.sh --name rancher-worker-02 …` → hostname `rancher-worker-02-7d2e0f6a`
+
+Override the prefix manually by writing
+`/etc/server4home/hostname-prefix` (single line) before first boot.
+
+### Inventory registration (IFRA)
+
+`server4home-ifra-register.service` POSTs `{mac, hostname, interface}` to
+`https://ifra.local.homelabsolutions.nen/api/ifra/mac-addresses/reserve-mac-address`
+on first boot. Failures are logged and ignored; the service retries on next
+boot until a sentinel at `/var/lib/server4home/.ifra-registered` records
+success. To point at a different endpoint or skip TLS verification, drop:
+
+```bash
+# /etc/server4home/ifra.conf
+IFRA_URL=https://ifra.example.lan/api/ifra/mac-addresses/reserve-mac-address
+IFRA_INSECURE=1
+```
+
 ---
 
 ## 5. Cluster topology
@@ -153,6 +205,36 @@ starts a new cluster or joins an existing one. Drop the appropriate file at
 | Worker node | `K3S_MODE=agent` + `K3S_URL=…` + `K3S_TOKEN=…` | No control plane on this node. |
 
 Reference template: [build/k3s/files/etc/server4home/k3s.conf.example](../build/k3s/files/etc/server4home/k3s.conf.example).
+
+### Rancher flavor — when it activates
+
+When you boot `server4home-rancher`, an extra service
+(`rancher-bootstrap.service`) runs after K3s is up and helm-installs
+cert-manager + Rancher Manager. It:
+
+- **Skips on agent nodes** (`K3S_MODE=agent`) — Rancher only makes sense on the
+  control-plane.
+- **Skips if Rancher already exists** in `cattle-system` namespace — safe to
+  run on additional HA CP nodes joining an existing cluster.
+- **Records success** in `/var/lib/server4home/.rancher-bootstrap-done` and
+  doesn't re-run on subsequent boots.
+
+Pre-boot config (drop into `/etc/server4home/rancher.conf` before first boot,
+based on [rancher.conf.example](../build/rancher/files/etc/server4home/rancher.conf.example)):
+
+```bash
+RANCHER_HOSTNAME=rancher.lan.example.com
+RANCHER_BOOTSTRAP_PASSWORD=changeme
+# Optional: RANCHER_CHART_VERSION, CERT_MANAGER_VERSION, RANCHER_REPLICAS
+```
+
+After the service finishes (typically 5–15 min on first boot), Rancher's UI is
+at `https://$RANCHER_HOSTNAME/`. Watch progress:
+
+```bash
+sudo journalctl -u rancher-bootstrap -f
+kubectl get pods -n cattle-system
+```
 
 ---
 
@@ -259,9 +341,15 @@ image-baked `config.yaml`.
 | --- | --- |
 | [Containerfile](../Containerfile) | Base server4home image |
 | [Containerfile.k3s](../Containerfile.k3s) | Layered K3s image |
+| [Containerfile.rancher](../Containerfile.rancher) | Layered Rancher Manager image (FROM K3s) |
 | [build/k3s/install.sh](../build/k3s/install.sh) | K3s binary install at image-build time |
+| [build/rancher/install.sh](../build/rancher/install.sh) | Helm binary install at image-build time |
+| [build/rancher/files/usr/libexec/server4home/rancher-bootstrap.sh](../build/rancher/files/usr/libexec/server4home/rancher-bootstrap.sh) | First-boot helm install of cert-manager + Rancher |
+| [build/rancher/files/etc/server4home/rancher.conf.example](../build/rancher/files/etc/server4home/rancher.conf.example) | Rancher runtime config template |
 | [build/k3s/files/](../build/k3s/files/) | All files baked into the K3s image rootfs |
 | [build/k3s/files/usr/libexec/server4home/setup-rancher-data.sh](../build/k3s/files/usr/libexec/server4home/setup-rancher-data.sh) | First-boot LVM setup |
+| [build/k3s/files/usr/libexec/server4home/set-hostname.sh](../build/k3s/files/usr/libexec/server4home/set-hostname.sh) | First-boot hostname assignment (SMBIOS product + machine-id) |
+| [build/k3s/files/usr/libexec/server4home/ifra-register.sh](../build/k3s/files/usr/libexec/server4home/ifra-register.sh) | Best-effort MAC+hostname registration with the IFRA inventory API |
 | [build/k3s/files/usr/lib/systemd/system/k3s.service](../build/k3s/files/usr/lib/systemd/system/k3s.service) | K3s unit (env-driven mode) |
 | [build/k3s/files/etc/server4home/k3s.conf.example](../build/k3s/files/etc/server4home/k3s.conf.example) | Runtime mode config template |
 | [build/k3s/files/etc/rancher/k3s/config.yaml](../build/k3s/files/etc/rancher/k3s/config.yaml) | K3s-native config baked in (kubeconfig perms, etc.) |

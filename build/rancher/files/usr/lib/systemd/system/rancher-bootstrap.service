@@ -1,0 +1,16 @@
+[Unit]
+Description=server4home: first-boot helm install of cert-manager + Rancher Manager
+Documentation=https://ranchermanager.docs.rancher.com/
+Wants=network-online.target k3s.service
+After=network-online.target k3s.service
+ConditionPathExists=/usr/libexec/server4home/rancher-bootstrap.sh
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/libexec/server4home/rancher-bootstrap.sh
+# Helm + Rancher rollout can take a while on first pull from the registry.
+TimeoutStartSec=30min
+
+[Install]
+WantedBy=multi-user.target

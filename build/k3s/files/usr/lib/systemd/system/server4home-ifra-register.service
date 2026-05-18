@@ -1,0 +1,16 @@
+[Unit]
+Description=server4home: register MAC + hostname with IFRA homelab inventory
+Documentation=https://github.com/dx4homelab/server4home
+Wants=network-online.target server4home-hostname.service
+After=network-online.target server4home-hostname.service
+ConditionPathExists=/usr/libexec/server4home/ifra-register.sh
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/libexec/server4home/ifra-register.sh
+# Best-effort: never fail the boot if the API is unreachable.
+SuccessExitStatus=0 1 2 3 4 5 6 7
+
+[Install]
+WantedBy=multi-user.target

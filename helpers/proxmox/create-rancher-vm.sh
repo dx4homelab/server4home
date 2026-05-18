@@ -112,6 +112,12 @@ run() {
 
 echo ">>> Creating VM $VMID ($NAME) on bridge=$BRIDGE storage=$STORAGE"
 
+# SMBIOS values must be base64-encoded for `qm set --smbios1`. The guest reads
+# the product name via /sys/class/dmi/id/product_name and uses it as the
+# hostname prefix in server4home-hostname.service.
+b64() { printf '%s' "$1" | base64 --wrap=0; }
+SMBIOS="uuid=$(uuidgen),manufacturer=$(b64 server4home),product=$(b64 "$NAME")"
+
 # 1) Create the VM shell (UEFI + q35 + virtio-scsi + serial console for journalctl)
 run qm create "$VMID" \
     --name "$NAME" \
@@ -126,6 +132,7 @@ run qm create "$VMID" \
     --net0 "$NET0" \
     --serial0 socket \
     --vga serial0 \
+    --smbios1 "$SMBIOS" \
     --agent enabled=1
 
 # 2) Import the qcow2; lands as an unused disk

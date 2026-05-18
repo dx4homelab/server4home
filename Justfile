@@ -122,6 +122,28 @@ build-vm-k3s $tag=default_tag: && (_build-bib ("localhost/" + image_name + "-k3s
 [group('Build K3s Flavor')]
 rebuild-vm-k3s $tag=default_tag: (build-k3s tag) && (_build-bib ("localhost/" + image_name + "-k3s") tag "qcow2" "iso/disk.toml")
 
+# Build the Rancher flavor (server4home-rancher) layered on top of K3s.
+# First boot helm-installs cert-manager + Rancher Manager onto the cluster.
+[group('Build Rancher Flavor')]
+build-rancher $tag=default_tag $helm_version="v3.21.0": (build-k3s tag)
+    #!/usr/bin/env bash
+    set -euo pipefail
+    podman build \
+        --build-arg "BASE_IMAGE=localhost/${image_name}-k3s:${tag}" \
+        --build-arg "HELM_VERSION=${helm_version}" \
+        --pull=newer \
+        --file Containerfile.rancher \
+        --tag "${image_name}-rancher:${tag}" \
+        .
+
+# Build a QCOW2 disk image of the Rancher flavor (assumes the container image exists)
+[group('Build Rancher Flavor')]
+build-vm-rancher $tag=default_tag: && (_build-bib ("localhost/" + image_name + "-rancher") tag "qcow2" "iso/disk.toml")
+
+# Force-rebuild the container image AND the Rancher QCOW2 disk image
+[group('Build Rancher Flavor')]
+rebuild-vm-rancher $tag=default_tag: (build-rancher tag) && (_build-bib ("localhost/" + image_name + "-rancher") tag "qcow2" "iso/disk.toml")
+
 # Command: _rootful_load_image
 # Description: This script checks if the current user is root or running under sudo. If not, it attempts to resolve the image tag using podman inspect.
 #              If the image is found, it loads it into rootful podman. If the image is not found, it pulls it from the repository.
@@ -389,6 +411,7 @@ import-libvirt $vm_name=image_name $memory="8192" $vcpus="4" $bridge="br0" $data
       --import \
       --os-variant fedora-unknown \
       --network "bridge=$bridge,model=virtio" \
+      --sysinfo "smbios,system.manufacturer=server4home,system.product=$vm_name" \
       --boot uefi \
       --tpm model=tpm-crb,backend.type=emulator,backend.version=2.0 \
       --graphics spice \

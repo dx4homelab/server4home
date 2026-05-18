@@ -1,0 +1,30 @@
+###############################################################################
+# server4home-rancher — layered flavor that adds Helm + a first-boot oneshot
+# that helm-installs cert-manager and Rancher Manager onto the K3s cluster
+# baked into the parent image.
+#
+# Activates only on server-mode K3s nodes (skipped automatically when
+# /etc/server4home/k3s.conf sets K3S_MODE=agent). Override versions or
+# hostname/bootstrap-password at runtime via /etc/server4home/rancher.conf.
+###############################################################################
+
+ARG BASE_IMAGE=localhost/server4home-k3s:stable
+ARG HELM_VERSION=v3.21.0
+
+FROM ${BASE_IMAGE}
+
+ARG HELM_VERSION
+
+# Files baked into the image rootfs (systemd unit, bootstrap script,
+# rancher.conf.example).
+COPY build/rancher/files/ /
+COPY build/rancher/install.sh /tmp/install-rancher.sh
+
+# Install the Helm CLI binary (cert-manager + Rancher are installed at first
+# boot of the running cluster, not here).
+RUN --mount=type=cache,dst=/var/cache \
+    --mount=type=cache,dst=/var/log \
+    HELM_VERSION="${HELM_VERSION}" bash /tmp/install-rancher.sh \
+    && rm -f /tmp/install-rancher.sh
+
+RUN bootc container lint

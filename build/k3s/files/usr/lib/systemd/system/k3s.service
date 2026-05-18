@@ -1,8 +1,8 @@
 [Unit]
 Description=K3s (server4home)
 Documentation=https://k3s.io
-Wants=network-online.target setup-rancher-data.service
-After=network-online.target setup-rancher-data.service
+Wants=network-online.target setup-rancher-data.service server4home-hostname.service
+After=network-online.target setup-rancher-data.service server4home-hostname.service
 
 [Install]
 WantedBy=multi-user.target
