@@ -47,14 +47,18 @@ COPY custom /custom
 COPY --from=ghcr.io/projectbluefin/common:latest@sha256:b8fe93b16674a547b4cf38493af19caa484d9575956fc3be04ca3d10faec23ff /system_files /oci/common
 COPY --from=ghcr.io/ublue-os/brew:latest@sha256:ca91068f51ce663d495ccfc829352d6621ec95f6c7db447ade55023b222f9762 /system_files /oci/brew
 
-# Base Image - uCore HCI (CentOS-based, hardened)
+# Base Image - uCore HCI (CentOS-bootc + virtualization stack for hyperconverged infrastructure)
 FROM ghcr.io/ublue-os/ucore-hci:latest
 
 ## Alternative uCore variants (uncomment to use):
-# FROM ghcr.io/ublue-os/ucore-server:latest (uCore Server)
-# FROM ghcr.io/ublue-os/silverblue-main:latest (Fedora-based, GNOME)
-# FROM ghcr.io/ublue-os/base-main:latest (Fedora-based, no desktop)
-# FROM quay.io/centos-bootc/centos-bootc:stream10 (CentOS-based, no customization)
+# FROM ghcr.io/ublue-os/ucore-minimal:latest      (lightweight container host, essentials only)
+# FROM ghcr.io/ublue-os/ucore:latest              (ucore-minimal + storage utilities & drivers)
+## Tag variants for the above: stable | testing | lts | nvidia | nvidia-lts
+
+## Other base image options:
+# FROM ghcr.io/ublue-os/silverblue-main:latest    (Fedora-based, GNOME desktop)
+# FROM ghcr.io/ublue-os/base-main:latest          (Fedora-based, no desktop)
+# FROM quay.io/centos-bootc/centos-bootc:stream10 (CentOS-bootc upstream, no ublue customization)
 
 ## Alternative GNOME OS base image (uncomment to use):
 # FROM quay.io/gnome_infrastructure/gnome-build-meta:gnomeos-nightly

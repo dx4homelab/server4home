@@ -1,0 +1,9 @@
++ sudo nmcli con add type bridge ifname br0 con-name br0 stp no ipv4.method auto ipv6.method auto
+Connection 'br0' (9dae776c-ccc8-44ef-9b2c-91f825bca505) successfully added.
++ sudo nmcli con add type ethernet ifname enp7s0 con-name br0-port-enp7s0 master br0 slave-type bridge
+Connection 'br0-port-enp7s0' (53c3831b-10ab-4037-95fb-7dfba7d1f592) successfully added.
++ sudo nmcli con modify 'Wired connection 1' connection.autoconnect no
++ sudo nmcli con down 'Wired connection 1'
+Connection 'Wired connection 1' successfully deactivated (D-Bus active path: /org/freedesktop/NetworkManager/ActiveConnection/2)
++ sudo nmcli con up br0
+Connection successfully activated (controller waiting for ports) (D-Bus active path: /org/freedesktop/NetworkManager/ActiveConnection/6)

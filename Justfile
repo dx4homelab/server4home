@@ -42,7 +42,7 @@ clean:
     rm -f previous.manifest.json
     rm -f changelog.md
     rm -f output.env
-    rm -f output/
+    rm -rf output/
 
 # Sudo Clean Repo
 [group('Utility')]
@@ -222,9 +222,19 @@ rebuild-raw $target_image=("localhost/" + image_name) $tag=default_tag: && (_reb
 rebuild-iso $target_image=("localhost/" + image_name) $tag=default_tag: && (_rebuild-bib target_image tag "iso" "iso/iso.toml")
 
 # Run a virtual machine with the specified image type and configuration
+# The VM joins your LAN via DHCP through a macvlan network (the VM gets its
+# own IP from your router). Override the LAN_* vars below if your network
+# differs. Note: due to macvlan design, the host running this command cannot
+# reach the VM directly — SSH from another machine on the LAN.
 _run-vm $target_image $tag $type $config:
     #!/usr/bin/bash
     set -eoux pipefail
+
+    # LAN config for macvlan networking. Override via environment if needed.
+    LAN_SUBNET="${LAN_SUBNET:-192.168.0.0/16}"
+    LAN_GATEWAY="${LAN_GATEWAY:-192.168.1.1}"
+    LAN_PARENT_IFACE="${LAN_PARENT_IFACE:-br0}"
+    NETWORK_NAME="${NETWORK_NAME:-qemu-lan}"
 
     # Determine the image file based on the type
     image_file="output/${type}/disk.${type}"
@@ -237,31 +247,40 @@ _run-vm $target_image $tag $type $config:
         just "build-${type}" "$target_image" "$tag"
     fi
 
-    # Determine an available port to use
-    port=8006
-    while grep -q :${port} <<< $(ss -tunalp); do
-        port=$(( port + 1 ))
-    done
-    echo "Using Port: ${port}"
-    echo "Connect to http://localhost:${port}"
+    # Ensure the macvlan network exists (idempotent, rootful)
+    if ! sudo podman network exists "$NETWORK_NAME"; then
+        sudo podman network create -d macvlan \
+            --subnet="$LAN_SUBNET" \
+            --gateway="$LAN_GATEWAY" \
+            -o parent="$LAN_PARENT_IFACE" \
+            "$NETWORK_NAME"
+    fi
+
+    echo "VM will join LAN '$LAN_SUBNET' via DHCP (parent: $LAN_PARENT_IFACE)"
+    echo "After boot, find its IP from your router's DHCP leases, then:"
+    echo "  ssh developer@<vm-ip>   (from another machine on the LAN)"
 
     # Set up the arguments for running the VM
     run_args=()
     run_args+=(--rm --privileged)
     run_args+=(--pull=newer)
-    run_args+=(--publish "127.0.0.1:${port}:8006")
+    run_args+=(--network "$NETWORK_NAME")
+    run_args+=(--env "DHCP=Y")
     run_args+=(--env "CPU_CORES=4")
     run_args+=(--env "RAM_SIZE=8G")
     run_args+=(--env "DISK_SIZE=64G")
     run_args+=(--env "TPM=Y")
     run_args+=(--env "GPU=Y")
+    run_args+=(--cap-add=NET_ADMIN)
     run_args+=(--device=/dev/kvm)
+    run_args+=(--device=/dev/net/tun)
+    run_args+=(--device=/dev/vhost-net)
+    run_args+=(--device-cgroup-rule="c *:* rwm")
     run_args+=(--volume "${PWD}/${image_file}":"/boot.${type}")
     run_args+=(docker.io/qemux/qemu)
 
-    # Run the VM and open the browser to connect
-    (sleep 30 && xdg-open http://localhost:"$port") &
-    podman run "${run_args[@]}"
+    # Run the VM (rootful: macvlan + /dev/vhost-net require it)
+    sudo podman run "${run_args[@]}"
 
 # Run a virtual machine from a QCOW2 image
 [group('Run Virtal Machine')]
@@ -274,6 +293,60 @@ run-vm-raw $target_image=("localhost/" + image_name) $tag=default_tag: && (_run-
 # Run a virtual machine from an ISO
 [group('Run Virtal Machine')]
 run-vm-iso $target_image=("localhost/" + image_name) $tag=default_tag: && (_run-vm target_image tag "iso" "iso/iso.toml")
+
+# Attaches the VM to the host bridge (default: br0), so the VM is a peer on
+# your LAN — reachable from every host on the network, including this one.
+# Re-running tears down any previous domain with the same name and re-imports.
+#
+# Parameters:
+#   vm_name: libvirt domain name (default: $image_name)
+#   memory:  RAM in MB (default: 8192)
+#   vcpus:   number of vCPUs (default: 4)
+#   bridge:  host bridge interface to attach to (default: br0)
+
+# Import the built qcow2 into libvirt as a managed domain
+[group('Libvirt')]
+import-libvirt $vm_name=image_name $memory="8192" $vcpus="4" $bridge="br0":
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    src="output/qcow2/disk.qcow2"
+    dst="/var/lib/libvirt/images/${vm_name}.qcow2"
+
+    if [[ ! -f "$src" ]]; then
+        echo "Error: $src not found. Run 'just build-vm' first." >&2
+        exit 1
+    fi
+
+    sudo systemctl enable --now libvirtd.socket
+
+    if sudo virsh dominfo "$vm_name" >/dev/null 2>&1; then
+        echo "Domain '$vm_name' exists; destroying and undefining (keeping NVRAM clean)."
+        sudo virsh destroy "$vm_name" 2>/dev/null || true
+        sudo virsh undefine "$vm_name" --nvram 2>/dev/null \
+          || sudo virsh undefine "$vm_name"
+    fi
+
+    sudo cp -f "$src" "$dst"
+    sudo chown qemu:qemu "$dst"
+
+    sudo virt-install \
+      --name "$vm_name" \
+      --memory "$memory" \
+      --vcpus "$vcpus" \
+      --disk "path=$dst,format=qcow2,bus=virtio" \
+      --import \
+      --os-variant fedora-unknown \
+      --network "bridge=$bridge,model=virtio" \
+      --boot uefi \
+      --tpm model=tpm-crb,backend.type=emulator,backend.version=2.0 \
+      --graphics spice \
+      --noautoconsole
+
+    echo ""
+    echo "Domain '$vm_name' imported and starting."
+    echo "Find its DHCP lease on your router, then: ssh developer@<vm-ip>"
+    echo "Or open Cockpit Client -> localhost -> Virtual Machines."
 
 # Run a virtual machine using systemd-vmspawn
 [group('Run Virtal Machine')]
