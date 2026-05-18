@@ -1,0 +1,28 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "server4home"
+version = "0.1.0"
+description = "Manifest-driven deployment runner for server4home VMs"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [
+  { name = "server4home contributors" },
+]
+dependencies = [
+  "pydantic>=2.5,<3",
+  "PyYAML>=6,<7",
+  "click>=8.1,<9",
+]
+
+[project.optional-dependencies]
+ifra = ["httpx>=0.27"]
+
+[project.scripts]
+server4home = "server4home.cli:cli"
+
+[tool.hatch.build.targets.wheel]
+packages = ["server4home"]

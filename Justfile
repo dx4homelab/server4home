@@ -122,27 +122,48 @@ build-vm-k3s $tag=default_tag: && (_build-bib ("localhost/" + image_name + "-k3s
 [group('Build K3s Flavor')]
 rebuild-vm-k3s $tag=default_tag: (build-k3s tag) && (_build-bib ("localhost/" + image_name + "-k3s") tag "qcow2" "iso/disk.toml")
 
-# Build the Rancher flavor (server4home-rancher) layered on top of K3s.
-# First boot helm-installs cert-manager + Rancher Manager onto the cluster.
-[group('Build Rancher Flavor')]
-build-rancher $tag=default_tag $helm_version="v3.21.0": (build-k3s tag)
+# Ensure a project virtualenv exists at ./.venv with the deploy runner installed.
+# Idempotent: a stamp file tracks the last install so re-runs are a no-op.
+[private]
+_python-env:
     #!/usr/bin/env bash
     set -euo pipefail
-    podman build \
-        --build-arg "BASE_IMAGE=localhost/${image_name}-k3s:${tag}" \
-        --build-arg "HELM_VERSION=${helm_version}" \
-        --pull=newer \
-        --file Containerfile.rancher \
-        --tag "${image_name}-rancher:${tag}" \
-        .
+    stamp=".venv/.installed"
+    if [[ -f "$stamp" ]] && [[ "tools/pyproject.toml" -ot "$stamp" ]]; then
+        exit 0
+    fi
+    if [[ ! -d .venv ]]; then
+        echo ">>> Creating ./.venv (Python virtualenv)"
+        python3 -m venv .venv
+    fi
+    echo ">>> Installing server4home (editable) into .venv"
+    .venv/bin/pip install --quiet --upgrade pip
+    .venv/bin/pip install --quiet -e tools
+    touch "$stamp"
 
-# Build a QCOW2 disk image of the Rancher flavor (assumes the container image exists)
-[group('Build Rancher Flavor')]
-build-vm-rancher $tag=default_tag: && (_build-bib ("localhost/" + image_name + "-rancher") tag "qcow2" "iso/disk.toml")
+# Examples:
+#     just deploy instances/k3s-on-virt-manager.yaml
+#     just deploy instances/foo.yaml
 
-# Force-rebuild the container image AND the Rancher QCOW2 disk image
-[group('Build Rancher Flavor')]
-rebuild-vm-rancher $tag=default_tag: (build-rancher tag) && (_build-bib ("localhost/" + image_name + "-rancher") tag "qcow2" "iso/disk.toml")
+# Deploy a VM from an instance manifest (tools/server4home Python runner)
+[group('Deploy')]
+deploy manifest: _python-env
+    .venv/bin/server4home deploy {{ manifest }}
+
+# Tear down a VM by manifest. Prompts for confirmation.
+[group('Deploy')]
+destroy manifest: _python-env
+    .venv/bin/server4home destroy {{ manifest }}
+
+# Validate a manifest without doing anything.
+[group('Deploy')]
+validate manifest: _python-env
+    .venv/bin/server4home validate {{ manifest }}
+
+# Show every registered plugin (targets, provisioners, installers).
+[group('Deploy')]
+list-plugins: _python-env
+    .venv/bin/server4home list-plugins
 
 # Command: _rootful_load_image
 # Description: This script checks if the current user is root or running under sudo. If not, it attempts to resolve the image tag using podman inspect.
@@ -355,21 +376,19 @@ run-vm-iso $target_image=("localhost/" + image_name) $tag=default_tag: && (_run-
 # data disk at the expected path is preserved on re-imports (delete it
 # manually with `sudo rm` if you want a clean slate).
 #
+# Low-level libvirt import. Most workflows should use `just deploy <manifest>`
+# instead — this recipe is the manifest-less escape hatch for debugging.
+#
 # Parameters:
 #   vm_name:        libvirt domain name (default: $image_name)
 #   memory:         RAM in MB (default: 8192)
 #   vcpus:          number of vCPUs (default: 4)
 #   bridge:         host bridge interface (default: br0)
 #   data_disk_size: e.g. "100G" to attach a data disk; empty for none (default: "")
-#   static_net:     static IP config — empty = DHCP (default); otherwise a CSV
-#                   "<addr/cidr>,<gateway>,<dns>" passed to the VM via SMBIOS
-#                   OEM strings. The image's first-boot service writes a
-#                   NetworkManager keyfile before NM starts.
-#                   Example: "192.168.120.50/16,192.168.1.1,192.168.1.1"
 
 # Import the built qcow2 into libvirt as a managed domain
 [group('Libvirt')]
-import-libvirt $vm_name=image_name $memory="8192" $vcpus="4" $bridge="br0" $data_disk_size="" $static_net="":
+import-libvirt $vm_name=image_name $memory="8192" $vcpus="4" $bridge="br0" $data_disk_size="":
     #!/usr/bin/env bash
     set -euo pipefail
 
@@ -408,19 +427,9 @@ import-libvirt $vm_name=image_name $memory="8192" $vcpus="4" $bridge="br0" $data
         disk_args+=("--disk" "path=$data_dst,format=qcow2,bus=virtio")
     fi
 
-    # Build the SMBIOS arg. Always carry the vm_name in system.product; if
-    # static_net is supplied, append oemStrings entries for the guest's
-    # first-boot network-static.sh to consume.
+    # SMBIOS carries the vm_name as system.product so the image's
+    # set-hostname.sh produces "<vm_name>-<8hex of machine-id>" (prefix mode).
     sysinfo="smbios,system.manufacturer=server4home,system.product=$vm_name"
-    if [[ -n "$static_net" ]]; then
-        IFS=',' read -r s_ip s_gw s_dns <<<"$static_net"
-        [[ -n "$s_ip"  ]] && sysinfo+=",oemStrings.entry0=server4home-static-ip=$s_ip"
-        [[ -n "$s_gw"  ]] && sysinfo+=",oemStrings.entry1=server4home-static-gw=$s_gw"
-        [[ -n "$s_dns" ]] && sysinfo+=",oemStrings.entry2=server4home-static-dns=$s_dns"
-        echo "Static IP: $s_ip (gw=$s_gw dns=$s_dns)"
-    else
-        echo "Static IP: none (VM will DHCP)"
-    fi
 
     sudo virt-install \
       --name "$vm_name" \
