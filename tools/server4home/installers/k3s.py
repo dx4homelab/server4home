@@ -64,12 +64,13 @@ class K3sInstaller(Installer):
 
     @staticmethod
     def _wait_ready(ctx: InstallContext) -> None:
-        log.info("Waiting for K3s API to be Ready again")
+        import subprocess
+        log.info("Waiting for K3s API to be Ready again (polling silently)")
+        ssh = ctx.ssh
+        cmd = ssh._base + [f"{ssh.user}@{ssh.host}",
+                           "sudo k3s kubectl get --raw=/readyz"]
         for _ in range(60):
-            rc = ctx.ssh.run(
-                "k3s kubectl get --raw=/readyz",
-                sudo=True, check=False, capture=True,
-            ).returncode
+            rc = subprocess.run(cmd, capture_output=True).returncode
             if rc == 0:
                 log.info("K3s API Ready")
                 return

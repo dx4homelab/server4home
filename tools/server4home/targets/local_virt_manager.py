@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import time
 from pathlib import Path
 
@@ -99,7 +100,9 @@ class LocalVirtManager(Target):
         if mac:
             net_arg += f",mac={mac}"
 
-        # virt-install
+        # virt-install. --channel wires up qemu-guest-agent so we can
+        # `virsh domifaddr --source agent` to discover the VM's IP without
+        # ARP polling.
         cmd = [
             "sudo", "virt-install",
             "--name", vm,
@@ -110,6 +113,7 @@ class LocalVirtManager(Target):
             "--os-variant", "fedora-unknown",
             "--network", net_arg,
             "--sysinfo", sysinfo,
+            "--channel", "unix,target.type=virtio,target.name=org.qemu.guest_agent.0",
             "--boot", "uefi",
             "--graphics", "spice",
             "--noautoconsole",
@@ -123,33 +127,62 @@ class LocalVirtManager(Target):
     # discover_ip()
     # ------------------------------------------------------------------ #
     def discover_ip(self, manifest: Manifest, mac: str | None) -> str:
+        """Resolve the VM's primary IPv4 address.
+
+        Priority:
+          (1) Manifest-supplied static IP — trust it.
+          (2) qemu-guest-agent via `virsh domifaddr --source agent`. Most
+              reliable for bridge-attached VMs (image ships qga).
+          (3) mDNS / DNS lookup by hostname.
+          (4) arp-scan + ARP neighbor poll (fallback for older images
+              without the agent or workstations without arp-scan).
+        """
         vm = manifest.hostname
 
-        # If the manifest specified a static IP, trust it.
         if manifest.primary_network.ip.provisioner == "static":
             static = manifest.primary_network.ip.static or ""
-            # Strip /CIDR suffix if present.
-            return static.split("/")[0]
+            return static.split("/")[0]  # strip /CIDR
 
-        # Otherwise: find the MAC libvirt actually assigned, then ARP for it.
+        # (2) qemu-guest-agent — try repeatedly while the agent comes up.
+        log.info("Waiting for qemu-guest-agent to report a primary IPv4")
+        for _ in range(60):
+            ip = self._domifaddr_agent(vm)
+            if ip:
+                log.info("Guest-agent IP: %s", ip)
+                return ip
+            time.sleep(2)
+
+        log.warning("Guest-agent didn't report an IP in 2 min; falling back to DNS/ARP")
+
+        # (3) DNS / mDNS.
+        for candidate in (vm, f"{vm}.local", f"{vm}.lan"):
+            try:
+                parts = run(["getent", "hosts", candidate],
+                            capture=True, quiet=True).stdout.split()
+                if parts:
+                    log.info("Resolved %s -> %s via DNS/mDNS", candidate, parts[0])
+                    return parts[0]
+            except CommandError:
+                pass
+
+        # (4) ARP polling.
         if mac is None:
             mac = self._libvirt_mac_for(vm)
-
-        log.info("Polling ARP for MAC %s (DHCP-assigned IP)", mac)
+        log.info("Polling ARP for MAC %s (will take up to 5 min on a cold bridge)", mac)
+        if shutil.which("arp-scan"):
+            run(["sudo", "arp-scan", "--localnet", "--retry=2"],
+                check=False, capture=True, quiet=True)
         for _ in range(60):
             ip = self._arp_lookup(mac)
             if ip:
                 return ip
             time.sleep(5)
 
-        # Last-ditch: DNS / mDNS by hostname.
-        try:
-            return run(["getent", "hosts", vm], capture=True).stdout.split()[0]
-        except Exception:
-            pass
         raise RuntimeError(
             f"could not discover IP for {vm} (mac={mac}). "
-            f"Try `sudo virsh domifaddr {vm}` once the VM is up."
+            f"Workarounds: (a) `brew install arp-scan`, "
+            f"(b) set `ip.provisioner: static` in the manifest, "
+            f"(c) ensure the K3s image includes qemu-guest-agent (rebuild)."
         )
 
     def destroy(self, manifest: Manifest) -> None:
@@ -186,10 +219,32 @@ class LocalVirtManager(Target):
 
     @staticmethod
     def _arp_lookup(mac: str) -> str | None:
-        out = run(["ip", "neigh"], capture=True, check=False).stdout
+        out = run(["ip", "neigh"], capture=True, check=False, quiet=True).stdout
         for line in out.splitlines():
             if mac.lower() in line.lower():
                 return line.split()[0]
+        return None
+
+    @staticmethod
+    def _domifaddr_agent(vm: str) -> str | None:
+        """Ask qemu-guest-agent for the VM's IPv4 (via `virsh domifaddr`)."""
+        p = run(
+            ["sudo", "virsh", "domifaddr", vm, "--source", "agent"],
+            check=False, capture=True, quiet=True,
+        )
+        if p.returncode != 0:
+            return None
+        for line in p.stdout.splitlines():
+            line = line.strip()
+            # Lines look like:
+            #   enp1s0     ...        ipv4   192.168.201.122/16
+            if "ipv4" not in line:
+                continue
+            for token in line.split():
+                if "." in token and "/" in token:
+                    addr = token.split("/")[0]
+                    if not addr.startswith("127."):
+                        return addr
         return None
 
     @staticmethod

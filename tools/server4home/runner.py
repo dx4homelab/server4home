@@ -77,17 +77,18 @@ def destroy(manifest: Manifest) -> None:
 # internals
 # --------------------------------------------------------------------------- #
 def _wait_for_k3s(ssh: SSH, attempts: int = 60, delay: int = 5) -> None:
-    log.info("Waiting for K3s API to report Ready")
+    import time as _time
+    log.info("Waiting for K3s API to report Ready (polling silently)")
     for _ in range(attempts):
-        rc = ssh.run(
-            "k3s kubectl get --raw=/readyz",
-            sudo=True, check=False, capture=True,
-        ).returncode
+        # Use Python's subprocess directly to bypass the per-call logger.
+        import subprocess as _sp
+        cmd = ssh._base + [f"{ssh.user}@{ssh.host}",
+                           "sudo k3s kubectl get --raw=/readyz"]
+        rc = _sp.run(cmd, capture_output=True).returncode
         if rc == 0:
             log.info("K3s API is Ready")
             return
-        import time
-        time.sleep(delay)
+        _time.sleep(delay)
     raise TimeoutError("K3s API did not become Ready within 5 minutes")
 
 

@@ -10,6 +10,12 @@ set -euo pipefail
 # K3s runs without it as long as --selinux is not enabled (it isn't here).
 # A warning will appear in journal at first start; safe to ignore.
 
+# qemu-guest-agent — lets the libvirt host query the VM's IP via
+# `virsh domifaddr --source agent`, which is the most reliable IP discovery
+# path for bridge-attached guests.
+dnf install -y qemu-guest-agent
+dnf clean all
+
 # K3s binary. URL-encode the '+' that appears in K3s version tags.
 url_version="${K3S_VERSION//+/%2B}"
 curl --fail --silent --show-error --location \

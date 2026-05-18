@@ -33,12 +33,13 @@ case "$current" in
 esac
 
 # ---- Mode (A): exact hostname via OEM string -----------------------------
+# dmidecode -t 11 produces tab-indented "String N: key=value" lines. We don't
+# care about the prefix; just look for our key anywhere in the line.
 EXACT=""
 if command -v dmidecode >/dev/null 2>&1 && [[ -d /sys/firmware/dmi/tables ]]; then
     while IFS= read -r line; do
-        line="${line# }"
         case "$line" in
-            String*server4home-hostname-exact=*)
+            *server4home-hostname-exact=*)
                 EXACT="${line#*server4home-hostname-exact=}"
                 ;;
         esac

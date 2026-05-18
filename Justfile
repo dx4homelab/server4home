@@ -122,24 +122,44 @@ build-vm-k3s $tag=default_tag: && (_build-bib ("localhost/" + image_name + "-k3s
 [group('Build K3s Flavor')]
 rebuild-vm-k3s $tag=default_tag: (build-k3s tag) && (_build-bib ("localhost/" + image_name + "-k3s") tag "qcow2" "iso/disk.toml")
 
-# Ensure a project virtualenv exists at ./.venv with the deploy runner installed.
-# Idempotent: a stamp file tracks the last install so re-runs are a no-op.
+# Ensure a project virtualenv exists at ./.venv with the deploy runner AND
+# the helm/kubectl binaries the runner shells out to. All three live under
+# .venv/bin/ and recipes prepend that to PATH, so atomic-OS workstations
+# don't need rpm-ostree installs or reboots.
+# Idempotent: a stamp file tracks the last pip install; the binary downloads
+# self-check via -x test.
 [private]
 _python-env:
     #!/usr/bin/env bash
     set -euo pipefail
+    HELM_VERSION="${HELM_VERSION:-v3.21.0}"
+    KUBECTL_VERSION="${KUBECTL_VERSION:-v1.35.4}"
+
     stamp=".venv/.installed"
-    if [[ -f "$stamp" ]] && [[ "tools/pyproject.toml" -ot "$stamp" ]]; then
-        exit 0
-    fi
     if [[ ! -d .venv ]]; then
         echo ">>> Creating ./.venv (Python virtualenv)"
         python3 -m venv .venv
     fi
-    echo ">>> Installing server4home (editable) into .venv"
-    .venv/bin/pip install --quiet --upgrade pip
-    .venv/bin/pip install --quiet -e tools
-    touch "$stamp"
+    if [[ ! -f "$stamp" ]] || [[ "tools/pyproject.toml" -nt "$stamp" ]]; then
+        echo ">>> Installing server4home (editable) into .venv"
+        .venv/bin/pip install --quiet --upgrade pip
+        .venv/bin/pip install --quiet -e tools
+        touch "$stamp"
+    fi
+    if [[ ! -x .venv/bin/helm ]]; then
+        echo ">>> Bootstrapping helm ${HELM_VERSION} into .venv/bin/"
+        tmp="$(mktemp -d)"
+        trap "rm -rf '$tmp'" EXIT
+        curl -fsSL "https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz" \
+            | tar -xz -C "$tmp"
+        install -m 0755 "$tmp/linux-amd64/helm" .venv/bin/helm
+    fi
+    if [[ ! -x .venv/bin/kubectl ]]; then
+        echo ">>> Bootstrapping kubectl ${KUBECTL_VERSION} into .venv/bin/"
+        curl -fsSL -o .venv/bin/kubectl \
+            "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl"
+        chmod 0755 .venv/bin/kubectl
+    fi
 
 # Examples:
 #     just deploy instances/k3s-on-virt-manager.yaml
@@ -148,22 +168,22 @@ _python-env:
 # Deploy a VM from an instance manifest (tools/server4home Python runner)
 [group('Deploy')]
 deploy manifest: _python-env
-    .venv/bin/server4home deploy {{ manifest }}
+    PATH="$PWD/.venv/bin:$PATH" .venv/bin/server4home deploy {{ manifest }}
 
 # Tear down a VM by manifest. Prompts for confirmation.
 [group('Deploy')]
 destroy manifest: _python-env
-    .venv/bin/server4home destroy {{ manifest }}
+    PATH="$PWD/.venv/bin:$PATH" .venv/bin/server4home destroy {{ manifest }}
 
 # Validate a manifest without doing anything.
 [group('Deploy')]
 validate manifest: _python-env
-    .venv/bin/server4home validate {{ manifest }}
+    PATH="$PWD/.venv/bin:$PATH" .venv/bin/server4home validate {{ manifest }}
 
 # Show every registered plugin (targets, provisioners, installers).
 [group('Deploy')]
 list-plugins: _python-env
-    .venv/bin/server4home list-plugins
+    PATH="$PWD/.venv/bin:$PATH" .venv/bin/server4home list-plugins
 
 # Command: _rootful_load_image
 # Description: This script checks if the current user is root or running under sudo. If not, it attempts to resolve the image tag using podman inspect.

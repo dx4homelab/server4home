@@ -56,9 +56,15 @@ def run(
     input_text: str | None = None,
     env: dict[str, str] | None = None,
     cwd: str | Path | None = None,
+    quiet: bool = False,
 ) -> subprocess.CompletedProcess:
-    """Run a subprocess; pretty-log it; raise CommandError on non-zero."""
-    log.info("$ %s", shlex.join(cmd))
+    """Run a subprocess; pretty-log it; raise CommandError on non-zero.
+
+    Pass ``quiet=True`` for hot polling loops where per-iteration logging
+    would be spam.
+    """
+    if not quiet:
+        log.info("$ %s", shlex.join(cmd))
     proc = subprocess.run(
         list(cmd),
         check=False,
@@ -107,10 +113,11 @@ class SSH:
     def reachable(self, timeout: int = 3) -> bool:
         cmd = self._base + ["-o", f"ConnectTimeout={timeout}",
                             f"{self.user}@{self.host}", "true"]
+        # Polling probe — never log per-attempt.
         return subprocess.run(cmd, capture_output=True).returncode == 0
 
     def wait_reachable(self, attempts: int = 60, delay: float = 5.0) -> None:
-        log.info("Waiting for SSH on %s@%s", self.user, self.host)
+        log.info("Waiting for SSH on %s@%s (polling silently)", self.user, self.host)
         for _ in range(attempts):
             if self.reachable():
                 log.info("SSH reachable")

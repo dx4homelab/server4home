@@ -28,16 +28,14 @@ fi
 
 raw="$(dmidecode -t 11 2>/dev/null || true)"
 
+# dmidecode -t 11 lines look like: `\tString 1: key=value`.
+# We don't care about leading whitespace or the "String N:" prefix.
 ip=""; gw=""; dns=""
 while IFS= read -r line; do
-    line="${line# }"
     case "$line" in
-        String*server4home-static-ip=*)
-            ip="${line#*server4home-static-ip=}" ;;
-        String*server4home-static-gw=*)
-            gw="${line#*server4home-static-gw=}" ;;
-        String*server4home-static-dns=*)
-            dns="${line#*server4home-static-dns=}" ;;
+        *server4home-static-ip=*)  ip="${line#*server4home-static-ip=}" ;;
+        *server4home-static-gw=*)  gw="${line#*server4home-static-gw=}" ;;
+        *server4home-static-dns=*) dns="${line#*server4home-static-dns=}" ;;
     esac
 done <<<"$raw"
 

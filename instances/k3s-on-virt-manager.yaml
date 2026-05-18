@@ -15,9 +15,13 @@ network:
       # provisioner: fixed # then use mac.value
       # fixed: 52:54:00:6b:3c:58
     ip:
-      provisioner: dhcp # or static
-      # provisioner: static
-      # static: 192.168.180.10
+      # Switched to static while we get qemu-guest-agent into the image and
+      # `brew install arp-scan` lands on the workstation. Once either is in
+      # place, this can flip back to `provisioner: dhcp`.
+      provisioner: static
+      static: 192.168.180.10/16        # ADJUST: pick a free IP on your LAN
+      gateway: 192.168.1.1
+      dns: 192.168.1.1
 install:
   - name: k3s
     version: v1.35.4+k3s1

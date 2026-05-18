@@ -133,6 +133,23 @@ just validate instances/foo.yaml
 
 ---
 
+### How the runner discovers a VM's IP
+
+The runner tries methods in order; the first that produces an answer wins:
+
+1. **Static IP from the manifest** (`ip.provisioner: static`). Zero discovery.
+2. **qemu-guest-agent** via `virsh domifaddr --source agent`. The K3s image
+   ships `qemu-guest-agent` and the target injects a virtio channel; this is
+   the recommended path for DHCP'd VMs.
+3. **DNS / mDNS** by hostname (`<hostname>`, `<hostname>.local`, `<hostname>.lan`).
+4. **ARP polling** keyed on the libvirt-assigned MAC. Auto-uses `arp-scan` if
+   it's on PATH to populate the neighbor table (`brew install arp-scan` on
+   atomic OS workstations; no reboot required).
+
+If all four fail, the runner errors out with explicit workarounds.
+
+---
+
 ## 4. Deploy flow
 
 ```mermaid
