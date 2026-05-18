@@ -1,0 +1,16 @@
+[Unit]
+Description=server4home: apply static IP from SMBIOS OEM strings (if requested)
+Documentation=https://github.com/dx4homelab/server4home
+DefaultDependencies=no
+After=systemd-tmpfiles-setup.service local-fs.target
+Before=NetworkManager.service network-pre.target
+RequiresMountsFor=/etc
+ConditionPathExists=/usr/libexec/server4home/network-static.sh
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/libexec/server4home/network-static.sh
+
+[Install]
+WantedBy=NetworkManager.service

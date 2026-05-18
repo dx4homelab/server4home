@@ -361,10 +361,15 @@ run-vm-iso $target_image=("localhost/" + image_name) $tag=default_tag: && (_run-
 #   vcpus:          number of vCPUs (default: 4)
 #   bridge:         host bridge interface (default: br0)
 #   data_disk_size: e.g. "100G" to attach a data disk; empty for none (default: "")
+#   static_net:     static IP config — empty = DHCP (default); otherwise a CSV
+#                   "<addr/cidr>,<gateway>,<dns>" passed to the VM via SMBIOS
+#                   OEM strings. The image's first-boot service writes a
+#                   NetworkManager keyfile before NM starts.
+#                   Example: "192.168.120.50/16,192.168.1.1,192.168.1.1"
 
 # Import the built qcow2 into libvirt as a managed domain
 [group('Libvirt')]
-import-libvirt $vm_name=image_name $memory="8192" $vcpus="4" $bridge="br0" $data_disk_size="":
+import-libvirt $vm_name=image_name $memory="8192" $vcpus="4" $bridge="br0" $data_disk_size="" $static_net="":
     #!/usr/bin/env bash
     set -euo pipefail
 
@@ -403,6 +408,20 @@ import-libvirt $vm_name=image_name $memory="8192" $vcpus="4" $bridge="br0" $data
         disk_args+=("--disk" "path=$data_dst,format=qcow2,bus=virtio")
     fi
 
+    # Build the SMBIOS arg. Always carry the vm_name in system.product; if
+    # static_net is supplied, append oemStrings entries for the guest's
+    # first-boot network-static.sh to consume.
+    sysinfo="smbios,system.manufacturer=server4home,system.product=$vm_name"
+    if [[ -n "$static_net" ]]; then
+        IFS=',' read -r s_ip s_gw s_dns <<<"$static_net"
+        [[ -n "$s_ip"  ]] && sysinfo+=",oemStrings.entry0=server4home-static-ip=$s_ip"
+        [[ -n "$s_gw"  ]] && sysinfo+=",oemStrings.entry1=server4home-static-gw=$s_gw"
+        [[ -n "$s_dns" ]] && sysinfo+=",oemStrings.entry2=server4home-static-dns=$s_dns"
+        echo "Static IP: $s_ip (gw=$s_gw dns=$s_dns)"
+    else
+        echo "Static IP: none (VM will DHCP)"
+    fi
+
     sudo virt-install \
       --name "$vm_name" \
       --memory "$memory" \
@@ -411,7 +430,7 @@ import-libvirt $vm_name=image_name $memory="8192" $vcpus="4" $bridge="br0" $data
       --import \
       --os-variant fedora-unknown \
       --network "bridge=$bridge,model=virtio" \
-      --sysinfo "smbios,system.manufacturer=server4home,system.product=$vm_name" \
+      --sysinfo "$sysinfo" \
       --boot uefi \
       --tpm model=tpm-crb,backend.type=emulator,backend.version=2.0 \
       --graphics spice \

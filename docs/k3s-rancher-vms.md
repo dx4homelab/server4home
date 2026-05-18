@@ -131,12 +131,21 @@ just import-libvirt server4home-k3s
 
 # Boot disk + 100 GB data disk (LVM first-boot service will claim it)
 just import-libvirt server4home-k3s 8192 4 br0 100G
+
+# Same + static IP (DHCP by default; this overrides at first boot)
+just import-libvirt server4home-k3s 8192 4 br0 100G \
+    "192.168.120.50/16,192.168.1.1,192.168.1.1"
 ```
 
-Positional args: `vm_name memory vcpus bridge data_disk_size`. On re-imports,
-an existing `<vm-name>-data.qcow2` is preserved (delete it manually with
-`sudo rm` if you want a clean slate). VM joins your LAN via DHCP through
-`br0`; find its IP from your router or Cockpit Client.
+Positional args: `vm_name memory vcpus bridge data_disk_size static_net`.
+The `static_net` CSV is `addr/cidr,gateway,dns`; leave empty for DHCP. It's
+passed to the VM via SMBIOS OEM strings; the image's first-boot
+`server4home-network-static.service` reads them with `dmidecode -t 11` and
+writes a NetworkManager keyfile **before NM starts**, so the VM comes up on
+the static IP from the first lease attempt. On re-imports, an existing
+`<vm-name>-data.qcow2` is preserved (delete it manually with `sudo rm` if you
+want a clean slate). For DHCP, find the VM's IP via your router or Cockpit
+Client.
 
 ### 4b. Proxmox (the real homelab path)
 
@@ -349,6 +358,7 @@ image-baked `config.yaml`.
 | [build/k3s/files/](../build/k3s/files/) | All files baked into the K3s image rootfs |
 | [build/k3s/files/usr/libexec/server4home/setup-rancher-data.sh](../build/k3s/files/usr/libexec/server4home/setup-rancher-data.sh) | First-boot LVM setup |
 | [build/k3s/files/usr/libexec/server4home/set-hostname.sh](../build/k3s/files/usr/libexec/server4home/set-hostname.sh) | First-boot hostname assignment (SMBIOS product + machine-id) |
+| [build/k3s/files/usr/libexec/server4home/network-static.sh](../build/k3s/files/usr/libexec/server4home/network-static.sh) | First-boot static-IP NM keyfile writer (reads SMBIOS OEM strings) |
 | [build/k3s/files/usr/libexec/server4home/ifra-register.sh](../build/k3s/files/usr/libexec/server4home/ifra-register.sh) | Best-effort MAC+hostname registration with the IFRA inventory API |
 | [build/k3s/files/usr/lib/systemd/system/k3s.service](../build/k3s/files/usr/lib/systemd/system/k3s.service) | K3s unit (env-driven mode) |
 | [build/k3s/files/etc/server4home/k3s.conf.example](../build/k3s/files/etc/server4home/k3s.conf.example) | Runtime mode config template |
