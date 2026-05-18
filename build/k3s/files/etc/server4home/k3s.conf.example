@@ -1,0 +1,27 @@
+# server4home K3s runtime config
+#
+# Drop a populated version of this file at /etc/server4home/k3s.conf BEFORE
+# the first boot of k3s.service. The systemd unit reads it as an env file.
+#
+# No file present => defaults below apply (new single-server cluster).
+# K3S_MODE is the only required key for non-default modes.
+
+# Mode: "server" (control plane) or "agent" (worker).
+# Default if unset: server
+#K3S_MODE=server
+
+# To join an existing cluster (as agent OR as additional HA server), set:
+#K3S_URL=https://first-server.lan:6443
+#K3S_TOKEN=K10xxxxxxxxxxxxxxxxxxxxxxxx::server:yyyyyyyy
+
+# Example 1 — new single-server cluster (just leave the whole file absent).
+#
+# Example 2 — worker joining "homelab" cluster:
+# K3S_MODE=agent
+# K3S_URL=https://homelab-cp.lan:6443
+# K3S_TOKEN=K10...::server:...
+#
+# Example 3 — additional HA control-plane node:
+# K3S_MODE=server
+# K3S_URL=https://homelab-cp.lan:6443
+# K3S_TOKEN=K10...::server:...

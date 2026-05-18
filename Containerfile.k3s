@@ -1,0 +1,27 @@
+###############################################################################
+# server4home-k3s — layered flavor that adds K3s to the base image.
+#
+# Mode (server / agent) is decided at *runtime* by /etc/server4home/k3s.conf,
+# so the same image works for both "start a new cluster" and "join an existing
+# cluster" deployments. See build/k3s/files/etc/server4home/k3s.conf.example.
+###############################################################################
+
+ARG BASE_IMAGE=localhost/server4home:stable
+ARG K3S_VERSION=v1.35.4+k3s1
+
+FROM ${BASE_IMAGE}
+
+# Re-declare ARGs after FROM so they're visible in this stage.
+ARG K3S_VERSION
+
+# Stage K3s files into the rootfs (systemd unit, dnf repo, example conf).
+COPY build/k3s/files/ /
+COPY build/k3s/install.sh /tmp/install-k3s.sh
+
+# Install K3s binary, SELinux policy, kubectl/crictl/ctr symlinks, enable unit.
+RUN --mount=type=cache,dst=/var/cache \
+    --mount=type=cache,dst=/var/log \
+    K3S_VERSION="${K3S_VERSION}" bash /tmp/install-k3s.sh \
+    && rm -f /tmp/install-k3s.sh
+
+RUN bootc container lint

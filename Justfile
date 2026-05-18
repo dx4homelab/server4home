@@ -100,6 +100,28 @@ build $target_image=image_name $tag=default_tag:
         --tag "${target_image}:${tag}" \
         .
 
+# Build the K3s flavor (server4home-k3s) layered on top of the base image.
+# Mode (server/agent) is decided at runtime via /etc/server4home/k3s.conf.
+[group('Build K3s Flavor')]
+build-k3s $tag=default_tag $k3s_version="v1.35.4+k3s1": (build image_name tag)
+    #!/usr/bin/env bash
+    set -euo pipefail
+    podman build \
+        --build-arg "BASE_IMAGE=localhost/${image_name}:${tag}" \
+        --build-arg "K3S_VERSION=${k3s_version}" \
+        --pull=newer \
+        --file Containerfile.k3s \
+        --tag "${image_name}-k3s:${tag}" \
+        .
+
+# Build a QCOW2 disk image of the K3s flavor (assumes the container image exists)
+[group('Build K3s Flavor')]
+build-vm-k3s $tag=default_tag: && (_build-bib ("localhost/" + image_name + "-k3s") tag "qcow2" "iso/disk.toml")
+
+# Force-rebuild the container image AND the K3s QCOW2 disk image
+[group('Build K3s Flavor')]
+rebuild-vm-k3s $tag=default_tag: (build-k3s tag) && (_build-bib ("localhost/" + image_name + "-k3s") tag "qcow2" "iso/disk.toml")
+
 # Command: _rootful_load_image
 # Description: This script checks if the current user is root or running under sudo. If not, it attempts to resolve the image tag using podman inspect.
 #              If the image is found, it loads it into rootful podman. If the image is not found, it pulls it from the repository.
@@ -164,7 +186,7 @@ _build-bib $target_image $tag $type $config: (_rootful_load_image target_image t
 
     args="--type ${type} "
     args+="--use-librepo=True "
-    args+="--rootfs=btrfs"
+    args+="--rootfs=xfs"
 
     BUILDTMP=$(mktemp -p "${PWD}" -d -t _build-bib.XXXXXXXXXX)
 
