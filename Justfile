@@ -205,6 +205,14 @@ _build-bib $target_image $tag $type $config: (_rootful_load_image target_image t
       "${target_image}:${tag}"
 
     mkdir -p output
+    # BIB writes its output into per-type subdirs (e.g. output/qcow2/disk.qcow2).
+    # `mv -f` does not replace non-empty directories, so clear the type-specific
+    # output dir first if a prior build of the same type left one behind.
+    if [[ "${type}" == "iso" ]]; then
+        sudo rm -rf output/bootiso
+    else
+        sudo rm -rf "output/${type}"
+    fi
     sudo mv -f $BUILDTMP/* output/
     sudo rmdir $BUILDTMP
     sudo chown -R $USER:$USER output/
@@ -320,20 +328,27 @@ run-vm-iso $target_image=("localhost/" + image_name) $tag=default_tag: && (_run-
 # your LAN — reachable from every host on the network, including this one.
 # Re-running tears down any previous domain with the same name and re-imports.
 #
+# If data_disk_size is non-empty, a second blank qcow2 is attached as vdb and
+# the K3s first-boot service will claim it for /var/lib/rancher. An existing
+# data disk at the expected path is preserved on re-imports (delete it
+# manually with `sudo rm` if you want a clean slate).
+#
 # Parameters:
-#   vm_name: libvirt domain name (default: $image_name)
-#   memory:  RAM in MB (default: 8192)
-#   vcpus:   number of vCPUs (default: 4)
-#   bridge:  host bridge interface to attach to (default: br0)
+#   vm_name:        libvirt domain name (default: $image_name)
+#   memory:         RAM in MB (default: 8192)
+#   vcpus:          number of vCPUs (default: 4)
+#   bridge:         host bridge interface (default: br0)
+#   data_disk_size: e.g. "100G" to attach a data disk; empty for none (default: "")
 
 # Import the built qcow2 into libvirt as a managed domain
 [group('Libvirt')]
-import-libvirt $vm_name=image_name $memory="8192" $vcpus="4" $bridge="br0":
+import-libvirt $vm_name=image_name $memory="8192" $vcpus="4" $bridge="br0" $data_disk_size="":
     #!/usr/bin/env bash
     set -euo pipefail
 
     src="output/qcow2/disk.qcow2"
     dst="/var/lib/libvirt/images/${vm_name}.qcow2"
+    data_dst="/var/lib/libvirt/images/${vm_name}-data.qcow2"
 
     if [[ ! -f "$src" ]]; then
         echo "Error: $src not found. Run 'just build-vm' first." >&2
@@ -352,11 +367,25 @@ import-libvirt $vm_name=image_name $memory="8192" $vcpus="4" $bridge="br0":
     sudo cp -f "$src" "$dst"
     sudo chown qemu:qemu "$dst"
 
+    # Build the disk arg list. Boot disk first, then optional data disk.
+    disk_args=("--disk" "path=$dst,format=qcow2,bus=virtio")
+
+    if [[ -n "$data_disk_size" ]]; then
+        if [[ -f "$data_dst" ]]; then
+            echo "Reusing existing data disk: $data_dst (delete it manually for a clean slate)."
+        else
+            echo "Creating data disk: $data_dst ($data_disk_size)"
+            sudo qemu-img create -f qcow2 "$data_dst" "$data_disk_size"
+            sudo chown qemu:qemu "$data_dst"
+        fi
+        disk_args+=("--disk" "path=$data_dst,format=qcow2,bus=virtio")
+    fi
+
     sudo virt-install \
       --name "$vm_name" \
       --memory "$memory" \
       --vcpus "$vcpus" \
-      --disk "path=$dst,format=qcow2,bus=virtio" \
+      "${disk_args[@]}" \
       --import \
       --os-variant fedora-unknown \
       --network "bridge=$bridge,model=virtio" \

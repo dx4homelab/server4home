@@ -40,7 +40,7 @@ Each VM gets **two disks**: a small boot disk (immutable bootc root) and a large
 data disk (LVM, where `/var/lib/rancher` lives so it can grow without juggling
 the OS partition).
 
-```
+```text
 ┌─────────────────────────────────────────────────────────────────────┐
 │ VM (Proxmox / libvirt)                                              │
 │                                                                     │
@@ -101,21 +101,17 @@ runs on the root disk — no failure, no surprises.
 ### 4a. libvirt (local development on this workstation)
 
 ```bash
-just import-libvirt server4home-k3s              # boots on br0 with DHCP
-# In Cockpit Client → localhost → Virtual Machines, or:
-ssh developer@<vm-ip-from-router>
+# Boot disk only (current behavior — k3s runs on root disk)
+just import-libvirt server4home-k3s
+
+# Boot disk + 100 GB data disk (LVM first-boot service will claim it)
+just import-libvirt server4home-k3s 8192 4 br0 100G
 ```
 
-The libvirt import doesn't add a data disk by default. To test the LVM path
-locally, attach one before first boot:
-
-```bash
-sudo qemu-img create -f qcow2 /var/lib/libvirt/images/server4home-k3s-data.qcow2 100G
-sudo virsh attach-disk server4home-k3s \
-    /var/lib/libvirt/images/server4home-k3s-data.qcow2 vdb \
-    --persistent --subdriver qcow2
-sudo virsh destroy server4home-k3s && sudo virsh start server4home-k3s
-```
+Positional args: `vm_name memory vcpus bridge data_disk_size`. On re-imports,
+an existing `<vm-name>-data.qcow2` is preserved (delete it manually with
+`sudo rm` if you want a clean slate). VM joins your LAN via DHCP through
+`br0`; find its IP from your router or Cockpit Client.
 
 ### 4b. Proxmox (the real homelab path)
 
@@ -150,7 +146,7 @@ starts a new cluster or joins an existing one. Drop the appropriate file at
 `/etc/server4home/k3s.conf` **before** first boot.
 
 | Goal | k3s.conf | Notes |
-|---|---|---|
+| --- | --- | --- |
 | Single-node new cluster | (no file) | Defaults: `K3S_MODE=server`. |
 | New HA control-plane (first node) | `K3S_MODE=server` (no URL) | Start it; copy `/var/lib/rancher/k3s/server/node-token`. |
 | Additional HA control-plane | `K3S_MODE=server` + `K3S_URL=https://cp1:6443` + `K3S_TOKEN=…` | Joins existing CP. |
@@ -210,10 +206,57 @@ sudo journalctl -u k3s --since "10 min ago"
 
 ---
 
-## 7. Where things live in this repo
+## 7. Adding custom commands and hooks
+
+Pick by use-case:
+
+| What you want to run | Where it goes | Idempotency |
+| --- | --- | --- |
+| Drop a file into the image rootfs | Add it under `build/k3s/files/<absolute-path>` (COPY'd into image) | Trivial — file is in `/usr` and immutable |
+| Modify the image *during* build | Append to `build/k3s/install.sh` (runs inside `podman build`) | One-shot at build time |
+| Run once on first boot of a VM | New `[Service] Type=oneshot` unit, like [setup-rancher-data.service](../build/k3s/files/usr/lib/systemd/system/setup-rancher-data.service) | Internal check (sentinel file or live state) |
+| Run on every start of K3s | Drop-in `build/k3s/files/usr/lib/systemd/system/k3s.service.d/NN-foo.conf` with `ExecStartPre`/`ExecStartPost` | Make the command itself idempotent |
+| Run on every boot (independent of K3s) | New unit with `WantedBy=multi-user.target`, baked under `build/k3s/files/usr/lib/systemd/system/` | Same |
+| Config K3s itself supports natively | Add a key to [build/k3s/files/etc/rancher/k3s/config.yaml](../build/k3s/files/etc/rancher/k3s/config.yaml) | K3s re-applies on every start |
+
+**Prefer K3s's native config over chmod/chown when possible.** K3s rewrites its
+state files (kubeconfig, certs, manifests) on restart, so out-of-band changes
+get clobbered. Anything with a corresponding K3s flag should go in
+`config.yaml`. Example, already baked in:
+
+```yaml
+# build/k3s/files/etc/rancher/k3s/config.yaml
+write-kubeconfig-mode: "0640"
+write-kubeconfig-group: "wheel"
+```
+
+That lets `developer` (a wheel member) run `kubectl --kubeconfig
+/etc/rancher/k3s/k3s.yaml get nodes` without `sudo`.
+
+For things K3s does **not** natively configure, use a systemd drop-in baked
+into the image. Example shape:
+
+```ini
+# build/k3s/files/usr/lib/systemd/system/k3s.service.d/20-example.conf
+[Service]
+# Wait for K3s to finish writing its state, then run our action.
+ExecStartPost=/bin/sh -c 'until [ -f /etc/rancher/k3s/k3s.yaml ]; do sleep 0.2; done'
+ExecStartPost=/usr/local/bin/my-post-start.sh
+```
+
+Drop-ins under `/usr/lib/systemd/system/<unit>.d/` layer on top of the main
+unit without modifying it — preferred over editing `k3s.service` directly.
+
+For *operator-overridable* config (not baked, dropped onto the VM at deploy
+time), use `/etc/rancher/k3s/config.yaml.d/*.yaml` — K3s merges those over the
+image-baked `config.yaml`.
+
+---
+
+## 8. Where things live in this repo
 
 | Path | Purpose |
-|---|---|
+| --- | --- |
 | [Containerfile](../Containerfile) | Base server4home image |
 | [Containerfile.k3s](../Containerfile.k3s) | Layered K3s image |
 | [build/k3s/install.sh](../build/k3s/install.sh) | K3s binary install at image-build time |
@@ -221,6 +264,7 @@ sudo journalctl -u k3s --since "10 min ago"
 | [build/k3s/files/usr/libexec/server4home/setup-rancher-data.sh](../build/k3s/files/usr/libexec/server4home/setup-rancher-data.sh) | First-boot LVM setup |
 | [build/k3s/files/usr/lib/systemd/system/k3s.service](../build/k3s/files/usr/lib/systemd/system/k3s.service) | K3s unit (env-driven mode) |
 | [build/k3s/files/etc/server4home/k3s.conf.example](../build/k3s/files/etc/server4home/k3s.conf.example) | Runtime mode config template |
+| [build/k3s/files/etc/rancher/k3s/config.yaml](../build/k3s/files/etc/rancher/k3s/config.yaml) | K3s-native config baked in (kubeconfig perms, etc.) |
 | [iso/disk.toml](../iso/disk.toml) | BIB qcow2/raw partitioning + baked user |
 | [iso/iso.toml](../iso/iso.toml) | Anaconda ISO kickstart |
 | [Justfile](../Justfile) | All build/run/import recipes |

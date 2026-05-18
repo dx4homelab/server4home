@@ -1,0 +1,11 @@
+# K3s server config — read on every start. Keys here are equivalent to k3s
+# CLI flags (with leading "--" stripped). See: https://docs.k3s.io/cli/server
+#
+# Files under /etc/rancher/k3s/config.yaml.d/*.yaml are also merged in, so
+# operator overrides can live there without editing the image-baked file.
+
+# Let wheel-group users read the admin kubeconfig directly (skips needing
+# `sudo` for every kubectl call). The developer user is in wheel via
+# iso/disk.toml's [[customizations.user]].
+write-kubeconfig-mode: "0640"
+write-kubeconfig-group: "wheel"
