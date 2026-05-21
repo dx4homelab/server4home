@@ -25,6 +25,14 @@ class K3sInstaller(Installer):
         return False
 
     def apply(self, ctx: InstallContext, entry: InstallSpec) -> None:
+        # Agent nodes: join config (mode/server/token) was delivered via
+        # SMBIOS and consumed by k3s-config.sh before first boot. The `args:`
+        # disable list is server-only, so there's nothing to do post-boot.
+        if ctx.manifest.k3s_mode() == "agent":
+            log.info("install[k3s]: agent node — join config applied at boot, "
+                     "nothing to do post-boot")
+            return
+
         disabled = self._extract_disabled(entry.args)
         if not disabled:
             log.info("install[k3s]: no recognized args to apply")

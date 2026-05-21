@@ -28,13 +28,13 @@ server4home list-plugins
 
 ## Workstation prerequisites
 
-| Tool          | Why                                                       |
-| ---           | ---                                                       |
-| `python3`     | ≥ 3.10 — to run the runner                                |
-| `virt-install`, `virsh`, `qemu-img` | for `target: local-virt-manager` |
-| `helm`, `kubectl` | applied against the new cluster from the workstation |
-| `ssh`/`scp`   | to drop K3s config and fetch kubeconfig                   |
-| `yq`          | NOT required (we use the Python `pyyaml` library)         |
+| Tool                                | Why                                                  |
+| ----------------------------------- | ---------------------------------------------------- |
+| `python3`                           | ≥ 3.10 — to run the runner                           |
+| `virt-install`, `virsh`, `qemu-img` | for `target: local-virt-manager`                     |
+| `helm`, `kubectl`                   | applied against the new cluster from the workstation |
+| `ssh`/`scp`                         | to drop K3s config and fetch kubeconfig              |
+| `yq`                                | NOT required (we use the Python `pyyaml` library)    |
 
 ## What the manifest looks like
 
@@ -80,17 +80,66 @@ install:
       bootstrapPassword: admin
 ```
 
+### Joining an existing cluster
+
+To make the VM an **agent** that joins an existing K3s/Rancher cluster
+instead of starting its own, give the `k3s` install entry a `config:` block.
+No `rancher-manager` entry — Rancher already runs on the cluster:
+
+```yaml
+install:
+  - name: k3s
+    config:
+      mode: agent
+      server: https://k3s-cp-01.lan:6443
+      token: { secret: "k3s/homelab/agent-token" }
+```
+
+The runner resolves the token, injects mode/server/token as SMBIOS OEM
+strings, and the VM's first-boot `k3s-config.sh` writes
+`/etc/server4home/k3s.conf` before `k3s.service` starts — so the node comes
+up already joined. Agent deploys skip the kubeconfig fetch and any
+kubeconfig-dependent installers (there's no local cluster API on an agent).
+
+## Secrets
+
+Manifests never carry secret values. A secret is referenced by name:
+
+```yaml
+install:
+  - name: k3s
+    config:
+      mode: agent
+      server: https://k3s-cp-01.lan:6443
+      token: { secret: "k3s/homelab/agent-token" }   # <-- reference, not value
+```
+
+At deploy time the runner resolves every `{ secret: <name> }` reference via a
+**secret provider** plugin (default: `local`). The `local` provider reads a
+flat `name: value` map from `secrets/secrets.yaml` — which is gitignored.
+Copy the committed template to start:
+
+```bash
+cp secrets/secrets.example.yaml secrets/secrets.yaml
+$EDITOR secrets/secrets.yaml      # fill in real values
+```
+
+Override the store path with `$S4H_SECRETS_FILE`, or the provider with the
+manifest's top-level `secret_provider:` key. A future `ifra` provider will
+fetch from the homelab inventory API — the manifest stays identical.
+
 ## Plugin architecture
 
-Four extension points, each backed by a `Registry` in
+Five extension points, each backed by a `Registry` in
 [`server4home/registry.py`](server4home/registry.py):
 
-| Registry          | Lives in                              | Built-ins                             |
-| ---               | ---                                   | ---                                   |
-| `targets`         | `server4home/targets/`                | `local-virt-manager`, `pve9` (stub)   |
-| `mac_provisioners`| `server4home/provisioners/mac.py`     | `default`, `fixed`, `ifra` (stub)     |
-| `ip_provisioners` | `server4home/provisioners/ip.py`      | `dhcp`, `static`                      |
-| `installers`      | `server4home/installers/`             | `k3s`, `cert-manager`, `rancher-manager` |
+| Registry           | Lives in                          | Built-ins                                |
+| ------------------ | --------------------------------- | ---------------------------------------- |
+| `targets`          | `server4home/targets/`            | `local-virt-manager`, `pve9` (stub)      |
+| `mac_provisioners` | `server4home/provisioners/mac.py` | `default`, `fixed`, `ifra` (stub)        |
+| `ip_provisioners`  | `server4home/provisioners/ip.py`  | `dhcp`, `static`                         |
+| `installers`       | `server4home/installers/`         | `k3s`, `cert-manager`, `rancher-manager` |
+| `secret_providers` | `server4home/secrets/`            | `local`                                  |
 
 ### Adding a new plugin
 
@@ -134,13 +183,13 @@ install:
 
 ## Environment overrides
 
-| Variable          | Used by                          | Default                       |
-| ---               | ---                              | ---                           |
-| `LIBVIRT_BRIDGE`  | `local-virt-manager` target      | `br0`                         |
-| `LIBVIRT_POOL`    | `local-virt-manager` target      | `/var/lib/libvirt/images`     |
-| `QCOW2_SRC`       | `local-virt-manager` target      | `output/qcow2/disk.qcow2`     |
-| `SSH_USER`        | runner                           | `developer`                   |
-| `SSH_KEY`         | runner                           | `~/.ssh/id_ed25519`           |
+| Variable         | Used by                     | Default                   |
+| ---------------- | --------------------------- | ------------------------- |
+| `LIBVIRT_BRIDGE` | `local-virt-manager` target | `br0`                     |
+| `LIBVIRT_POOL`   | `local-virt-manager` target | `/var/lib/libvirt/images` |
+| `QCOW2_SRC`      | `local-virt-manager` target | `output/qcow2/disk.qcow2` |
+| `SSH_USER`       | runner                      | `developer`               |
+| `SSH_KEY`        | runner                      | `~/.ssh/id_ed25519`       |
 
 ## Limitations (today)
 

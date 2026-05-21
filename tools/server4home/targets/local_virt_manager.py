@@ -83,15 +83,29 @@ class LocalVirtManager(Target):
         mac = mac_plugin.resolve(manifest, net.mac)
         ip_result = ip_plugin.resolve(manifest, net.ip)
 
-        # Build the --sysinfo argument.
+        # Build the OEM-string list. Order doesn't matter; entryN indices are
+        # just slots. The guest first-boot services scan all of them by key.
+        oem: list[str] = [
+            # exact-hostname marker so set-hostname.sh skips the UUID suffix:
+            f"server4home-hostname-exact={vm}",
+        ]
+        oem += ip_result.oem_strings
+        # K3s join config (mode/server/token) for k3s-config.sh. Secret refs
+        # were already resolved by the runner, so `token` here is a literal.
+        join = manifest.k3s_join()
+        if join.get("mode"):
+            oem.append(f"server4home-k3s-mode={join['mode']}")
+        if join.get("server"):
+            oem.append(f"server4home-k3s-url={join['server']}")
+        if join.get("token"):
+            oem.append(f"server4home-k3s-token={join['token']}")
+
         sysinfo_parts = [
             "smbios",
             "system.manufacturer=server4home",
             f"system.product={vm}",
-            # exact-hostname marker so set-hostname.sh skips the UUID suffix:
-            f"oemStrings.entry0=server4home-hostname-exact={vm}",
         ]
-        for i, entry in enumerate(ip_result.oem_strings, start=1):
+        for i, entry in enumerate(oem):
             sysinfo_parts.append(f"oemStrings.entry{i}={entry}")
         sysinfo = ",".join(sysinfo_parts)
 

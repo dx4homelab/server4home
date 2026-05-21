@@ -12,5 +12,6 @@ becomes visible the moment its module is imported anywhere in the process.
 from . import targets        # noqa: F401  (side-effect: register targets)
 from . import provisioners   # noqa: F401  (side-effect: register provisioners)
 from . import installers     # noqa: F401  (side-effect: register installers)
+from . import secrets        # noqa: F401  (side-effect: register secret providers)
 
 __version__ = "0.1.0"

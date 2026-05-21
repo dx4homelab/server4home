@@ -192,20 +192,48 @@ then runs `server4home deploy <manifest>`. The kubeconfig lands at
 
 ## 5. Plugin architecture
 
-Four extension points, all in [`tools/server4home/registry.py`](../tools/server4home/registry.py):
+Five extension points, all in [`tools/server4home/registry.py`](../tools/server4home/registry.py):
 
-| Registry          | Location                                    | Built-ins (today)                       |
-| ---               | ---                                         | ---                                     |
-| `targets`         | `tools/server4home/targets/`                | `local-virt-manager`, `pve9` (stub)     |
-| `mac_provisioners`| `tools/server4home/provisioners/mac.py`     | `default`, `fixed`, `ifra` (stub)       |
-| `ip_provisioners` | `tools/server4home/provisioners/ip.py`      | `dhcp`, `static`                        |
-| `installers`      | `tools/server4home/installers/`             | `k3s`, `cert-manager`, `rancher-manager`|
+| Registry | Location | Built-ins (today) |
+| --- | --- | --- |
+| `targets` | `tools/server4home/targets/` | `local-virt-manager`, `pve9` (stub) |
+| `mac_provisioners` | `tools/server4home/provisioners/mac.py` | `default`, `fixed`, `ifra` (stub) |
+| `ip_provisioners` | `tools/server4home/provisioners/ip.py` | `dhcp`, `static` |
+| `installers` | `tools/server4home/installers/` | `k3s`, `cert-manager`, `rancher-manager` |
+| `secret_providers` | `tools/server4home/secrets/` | `local` |
 
 Adding a plugin is purely additive: subclass the right ABC, add a
 `@<registry>.register("<key>")` decorator, import the module from its
 subpackage's `__init__.py`. The runner picks it up by name from any manifest
 that references it. See [`tools/README.md`](../tools/README.md) for a worked
 example (Longhorn).
+
+### Secrets — never in git
+
+Manifests reference secrets by name, never by value:
+
+```yaml
+install:
+  - name: k3s
+    config:
+      mode: agent
+      server: https://k3s-cp-01.lan:6443
+      token: { secret: "k3s/homelab/agent-token" }
+```
+
+At deploy time the runner resolves every `{ secret: <name> }` through a
+secret-provider plugin. The `local` provider reads `secrets/secrets.yaml`
+(gitignored — copy [`secrets/secrets.example.yaml`](../secrets/secrets.example.yaml)).
+A future `ifra` provider will fetch from the homelab inventory API with **no
+manifest change** — same reference, different backend.
+
+For a K3s join token specifically: the runner resolves it, then the
+`local-virt-manager` target injects mode/server/token as SMBIOS OEM strings.
+The VM's first-boot `k3s-config.sh` writes `/etc/server4home/k3s.conf` from
+them *before* `k3s.service` starts, so the node boots already joined. The
+token never touches a git-tracked file — only the gitignored secret store
+and SMBIOS (the latter no more exposed than the token already is on any K3s
+node).
 
 ---
 
@@ -310,7 +338,10 @@ plugin uses to apply manifest-supplied `args:`.
 | [build/k3s/files/usr/libexec/server4home/setup-rancher-data.sh](../build/k3s/files/usr/libexec/server4home/setup-rancher-data.sh) | First-boot LVM setup |
 | [build/k3s/files/usr/libexec/server4home/set-hostname.sh](../build/k3s/files/usr/libexec/server4home/set-hostname.sh) | First-boot hostname (exact mode + prefix-suffix fallback) |
 | [build/k3s/files/usr/libexec/server4home/network-static.sh](../build/k3s/files/usr/libexec/server4home/network-static.sh) | First-boot static-IP NM keyfile writer |
+| [build/k3s/files/usr/libexec/server4home/k3s-config.sh](../build/k3s/files/usr/libexec/server4home/k3s-config.sh) | First-boot writer of /etc/server4home/k3s.conf from SMBIOS (join config) |
 | [build/k3s/files/usr/libexec/server4home/ifra-register.sh](../build/k3s/files/usr/libexec/server4home/ifra-register.sh) | First-boot inventory registration |
+| [secrets/secrets.example.yaml](../secrets/secrets.example.yaml) | Template for the gitignored local secret store |
+| [tools/server4home/secrets/](../tools/server4home/secrets/) | Secret-provider plugins (`local`; `ifra` later) |
 | [build/k3s/files/etc/rancher/k3s/config.yaml](../build/k3s/files/etc/rancher/k3s/config.yaml) | Baked K3s config (kubeconfig perms, etc.) |
 | [build/k3s/files/etc/server4home/k3s.conf.example](../build/k3s/files/etc/server4home/k3s.conf.example) | K3s runtime mode config template |
 | [iso/disk.toml](../iso/disk.toml) | BIB qcow2/raw partitioning + baked user |

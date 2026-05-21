@@ -111,6 +111,7 @@ class Manifest(BaseModel):
     base: str = "k3s-base"
     hostname: str
     target: str   # validated against the registry, not a Literal
+    secret_provider: str = "local"   # which secret-provider plugin to use
     resources: ResourceSpec = Field(default_factory=ResourceSpec)
     disks: list[DiskSpec] = Field(default_factory=list)
     network: list[NetworkSpec] = Field(default_factory=list)
@@ -146,3 +147,38 @@ class Manifest(BaseModel):
             "k3s-base": "server4home-k3s",
         }
         return mapping.get(self.base, self.base)
+
+    def k3s_install(self) -> InstallSpec | None:
+        """The `install:` entry named 'k3s', if any."""
+        for entry in self.install:
+            if entry.name == "k3s":
+                return entry
+        return None
+
+    def k3s_mode(self) -> str:
+        """'server' (default) or 'agent', from the k3s install entry's config."""
+        k3s = self.k3s_install()
+        if k3s is None:
+            return "server"
+        mode = k3s.config.get("mode", "server")
+        if mode not in ("server", "agent"):
+            raise ValueError(f"install[k3s].config.mode must be server|agent, got '{mode}'")
+        return mode
+
+    def k3s_join(self) -> dict[str, str]:
+        """Join parameters for the k3s entry: {mode, server, token} (resolved).
+
+        Returns only the keys that are set. `server`/`token` are present when
+        joining an existing cluster. Secret references must already have been
+        resolved (see secretref.resolve).
+        """
+        k3s = self.k3s_install()
+        if k3s is None:
+            return {}
+        cfg = k3s.config
+        out: dict[str, str] = {"mode": self.k3s_mode()}
+        if cfg.get("server"):
+            out["server"] = str(cfg["server"])
+        if cfg.get("token"):
+            out["token"] = str(cfg["token"])
+        return out

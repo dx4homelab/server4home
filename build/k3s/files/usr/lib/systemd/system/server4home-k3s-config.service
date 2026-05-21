@@ -1,0 +1,14 @@
+[Unit]
+Description=server4home: write /etc/server4home/k3s.conf from SMBIOS (k3s join config)
+Documentation=https://github.com/dx4homelab/server4home
+After=systemd-machine-id-commit.service
+Before=k3s.service
+ConditionPathExists=/usr/libexec/server4home/k3s-config.sh
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/libexec/server4home/k3s-config.sh
+
+[Install]
+WantedBy=multi-user.target

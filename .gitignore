@@ -3,3 +3,23 @@ _build_*
 output
 _build-*/**
 __pycache__/
+
+# --- secrets / credentials — never commit (public repo) ---
+# Cluster credentials fetched by the deploy runner.
+kubeconfigs/
+*.kubeconfig
+# Local secret store (resolved by the runner; see docs).
+# Everything under secrets/ is ignored EXCEPT the committed example template.
+secrets/*
+!secrets/secrets.example.yaml
+*.secret
+# A populated runtime k3s.conf carries the cluster join TOKEN — only the
+# .example belongs in git. The real file is delivered to the VM at deploy
+# time, never baked into the image tree.
+build/k3s/files/etc/server4home/k3s.conf
+/etc/server4home/k3s.conf
+
+# --- Python deploy runner ---
+.venv/
+*.egg-info/
+.pytest_cache/

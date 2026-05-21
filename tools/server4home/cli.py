@@ -8,7 +8,13 @@ import click
 
 from . import runner
 from .manifest import Manifest
-from .registry import installers, ip_provisioners, mac_provisioners, targets
+from .registry import (
+    installers,
+    ip_provisioners,
+    mac_provisioners,
+    secret_providers,
+    targets,
+)
 from .util import log
 
 
@@ -63,6 +69,7 @@ def list_plugins_cmd() -> None:
         ("mac-provisioner", mac_provisioners.keys()),
         ("ip-provisioner",  ip_provisioners.keys()),
         ("installer",       installers.keys()),
+        ("secret-provider", secret_providers.keys()),
     ]
     for kind, keys in rows:
         click.echo(f"{kind}:")
