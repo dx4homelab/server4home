@@ -99,6 +99,9 @@ class LocalVirtManager(Target):
             oem.append(f"server4home-k3s-url={join['server']}")
         if join.get("token"):
             oem.append(f"server4home-k3s-token={join['token']}")
+        # etcd is the default in k3s-config.sh; only signal the sqlite opt-out.
+        if manifest.k3s_datastore() == "sqlite":
+            oem.append("server4home-k3s-datastore=sqlite")
 
         sysinfo_parts = [
             "smbios",

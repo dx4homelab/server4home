@@ -165,6 +165,19 @@ class Manifest(BaseModel):
             raise ValueError(f"install[k3s].config.mode must be server|agent, got '{mode}'")
         return mode
 
+    def k3s_datastore(self) -> str:
+        """'etcd' (default) or 'sqlite', from the k3s install entry's config.
+
+        A new-cluster server defaults to embedded etcd — HA-capable, and the
+        datastore choice can't be changed in place later. 'sqlite' is the
+        deliberate single-node opt-out.
+        """
+        k3s = self.k3s_install()
+        ds = "etcd" if k3s is None else k3s.config.get("datastore", "etcd")
+        if ds not in ("etcd", "sqlite"):
+            raise ValueError(f"install[k3s].config.datastore must be etcd|sqlite, got '{ds}'")
+        return ds
+
     def k3s_join(self) -> dict[str, str]:
         """Join parameters for the k3s entry: {mode, server, token} (resolved).
 

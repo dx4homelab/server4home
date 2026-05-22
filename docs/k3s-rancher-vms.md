@@ -282,6 +282,42 @@ sudo xfs_growfs /var/lib/rancher
 
 All online; K3s keeps running.
 
+### Datastore: embedded etcd by default
+
+New clusters start with **embedded etcd** (`cluster-init: true`), not K3s's
+default SQLite. This is decided at first boot by `k3s-config.sh` and is a
+**one-way door** — the datastore can't be changed in place afterwards.
+
+- **etcd** (default): HA-capable. A single-node etcd cluster runs fine and
+  can later grow to a 3-node quorum by joining two more `mode: server`
+  nodes. Required if you'll ever add control-plane nodes.
+- **sqlite** (opt-out): set `datastore: sqlite` in the manifest's `k3s`
+  install config. Lighter, but permanently single-node — no HA, no extra
+  servers ever.
+
+Joining nodes (`server` with a `server:` URL, or `agent`) never get
+`cluster-init` — they attach to the existing cluster's datastore.
+
+### Back up / restore the cluster (etcd snapshots)
+
+For an etcd cluster, `k3s` has snapshotting built in — this is your "clone",
+not VM cloning:
+
+```bash
+# On a server node — manual snapshot:
+sudo k3s etcd-snapshot save
+
+# Snapshots live in /var/lib/rancher/k3s/server/db/snapshots/
+sudo k3s etcd-snapshot ls
+
+# Restore (cluster down) from a snapshot:
+sudo k3s server --cluster-reset \
+  --cluster-reset-restore-path=/var/lib/rancher/k3s/server/db/snapshots/<snap>
+```
+
+Scheduled snapshots can be enabled via `config.yaml`
+(`etcd-snapshot-schedule-cron`, `etcd-snapshot-retention`), and pushed to S3.
+
 ### Upgrade a VM via bootc
 
 ```bash
