@@ -1,0 +1,25 @@
+{
+  "duration_seconds": 0.0,
+  "error": "RuntimeError: Proxmox API token not found. Add to secrets/secrets.yaml:",
+  "failed_step": "runner",
+  "hostname": "k3s-rancher-on-ucore-pve-vm",
+  "image": {
+    "digest": null,
+    "k3s_version": "v1.35.4+k3s1",
+    "ref": "localhost/server4home-k3s:stable"
+  },
+  "installers": [],
+  "k3s_mode": "server",
+  "kind": "deploy",
+  "manifest": {
+    "dirty": false,
+    "git_sha": "78c5834",
+    "path": "instances/k3s-rancher-on-ucore-pve-vm.yaml"
+  },
+  "operator": "145386996+dx4homelab@users.noreply.github.com",
+  "outcome": "failure",
+  "schema_version": 1,
+  "target": "pve9",
+  "timestamp": "2026-05-23T22:07:30Z",
+  "vm": {}
+}

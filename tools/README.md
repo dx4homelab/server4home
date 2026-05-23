@@ -80,6 +80,31 @@ install:
       bootstrapPassword: admin
 ```
 
+### Pinning a Proxmox VMID
+
+When `target: pve9`, the runner picks the VMID in this order:
+
+1. `proxmox.vmid` on the manifest (if set) — the documented path.
+2. The VMID of an existing VM with the same `hostname:` on the target node
+   (idempotent re-deploy).
+3. Proxmox `/cluster/nextid` — auto-allocate.
+
+Pin a VMID when you use a grouped numbering scheme (e.g. `5xxxx` for
+storage VMs, `7xxxx` for k3s control planes). The slot stays stable across
+destroy + recreate:
+
+```yaml
+base: k3s-base
+hostname: k3s-rancher-on-ucore-pve-vm
+target: pve9
+
+proxmox:
+  vmid: 70020       # validated as an int in [100, 999_999_999]
+```
+
+The field is typed (Pydantic), so a typo like `vmdid:` errors at validate
+time instead of silently falling through to auto-allocate.
+
 ### Joining an existing cluster
 
 To make the VM an **agent** that joins an existing K3s/Rancher cluster

@@ -19,6 +19,14 @@ base: k3s-base
 hostname: k3s-rancher-on-ucore-pve-vm
 target: pve9
 
+# Pin the Proxmox VMID. Picking a stable ID up front (rather than letting
+# /cluster/nextid allocate one) means the VM keeps its slot across destroy +
+# recreate, and your numbering scheme stays meaningful. Existing IDs on this
+# node (from the PVE UI): 5001, 20010, 30121, 40020, 60010, 60020, 60030.
+# 7xxxx leaves room for the k3s-on-pve group.
+proxmox:
+  vmid: 70010
+
 resources:
   memory: 16384
   vcpus: 4

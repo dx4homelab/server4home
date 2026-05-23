@@ -1,0 +1,55 @@
+{
+  "duration_seconds": 177.3,
+  "error": null,
+  "failed_step": null,
+  "hostname": "k3s-rancher-on-ucore-pve-vm",
+  "image": {
+    "digest": null,
+    "k3s_version": "v1.35.4+k3s1",
+    "ref": "localhost/server4home-k3s:stable"
+  },
+  "installers": [
+    {
+      "name": "k3s",
+      "outcome": "success",
+      "version": "v1.35.4+k3s1"
+    },
+    {
+      "name": "metallb",
+      "outcome": "success",
+      "version": "0.15.3"
+    },
+    {
+      "name": "kubernetes-secret",
+      "outcome": "success",
+      "version": null
+    },
+    {
+      "name": "kubernetes-secret",
+      "outcome": "success",
+      "version": null
+    },
+    {
+      "name": "rancher-manager",
+      "outcome": "success",
+      "version": "v2.14.1"
+    }
+  ],
+  "k3s_mode": "server",
+  "kind": "deploy",
+  "manifest": {
+    "dirty": true,
+    "git_sha": "78c5834",
+    "path": "instances/k3s-rancher-on-ucore-pve-vm.yaml"
+  },
+  "operator": "145386996+dx4homelab@users.noreply.github.com",
+  "outcome": "success",
+  "schema_version": 1,
+  "target": "pve9",
+  "timestamp": "2026-05-23T22:34:43Z",
+  "vm": {
+    "ip": "192.168.130.20",
+    "mac": "BC:24:11:A4:BB:E9",
+    "name": "k3s-rancher-on-ucore-pve-vm"
+  }
+}

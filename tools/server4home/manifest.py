@@ -100,6 +100,23 @@ class ResourceSpec(BaseModel):
     vcpus: int = 4
 
 
+class ProxmoxConfig(BaseModel):
+    """PVE-target-specific knobs. Only honored when `target: pve9`.
+
+    Keeping these in a typed sub-model (rather than free-form extras) means
+    Pydantic catches typos (`vmdid: 70020`) — a silent fallthrough to
+    /cluster/nextid would otherwise be very confusing on the next redeploy.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    # Pin a specific VMID for this VM (e.g. for grouped numbering schemes
+    # like 70020 = k8s/k3s control planes). When omitted: the target looks
+    # up an existing VM with the same name first, then falls back to
+    # Proxmox's /cluster/nextid auto-allocator.
+    vmid: int | None = Field(default=None, ge=100, le=999_999_999)
+
+
 # --------------------------------------------------------------------------- #
 # Top-level
 # --------------------------------------------------------------------------- #
@@ -116,6 +133,7 @@ class Manifest(BaseModel):
     disks: list[DiskSpec] = Field(default_factory=list)
     network: list[NetworkSpec] = Field(default_factory=list)
     install: list[InstallSpec] = Field(default_factory=list)
+    proxmox: ProxmoxConfig | None = None   # only honored when target == "pve9"
 
     # Resolved file path (set after loading); not part of the YAML itself.
     source_path: Path | None = None

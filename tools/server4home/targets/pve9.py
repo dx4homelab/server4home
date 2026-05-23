@@ -69,14 +69,15 @@ class Pve9(Target):
             "1", "true", "yes", "y",
         )
         self.api_timeout = float(os.environ.get("PVE_API_TIMEOUT", "60"))
-
         self.api_base = f"https://{self.host}:{self.port}/api2/json"
-        self.token = self._load_token()
-        self._client = httpx.Client(
-            verify=self.verify_tls,
-            timeout=self.api_timeout,
-            headers={"Authorization": f"PVEAPIToken={self.token}"},
-        )
+
+        # The PVE API token may live in a per-hostname overlay in
+        # secrets.yaml, so we cannot resolve it here — the manifest (and
+        # therefore the hostname to bind on the secret provider) isn't
+        # known yet. Defer to _ensure_client(manifest), called from
+        # create() and destroy() before any API call.
+        self.token: str | None = None
+        self._client: httpx.Client | None = None
 
     # ------------------------------------------------------------------ #
     # create()
@@ -89,6 +90,7 @@ class Pve9(Target):
                 "Run `just rebuild-vm-k3s` first."
             )
 
+        self._ensure_client(manifest)
         vm = manifest.hostname
 
         # 1) Resolve VMID — prefer manifest's `proxmox.vmid`, fall back to
@@ -244,6 +246,7 @@ class Pve9(Target):
         if manifest.primary_network.ip.provisioner == "static":
             return (manifest.primary_network.ip.static or "").split("/")[0]
 
+        self._ensure_client(manifest)
         vmid = self._resolve_vmid(manifest)
         log.info("Polling qemu-guest-agent for primary IPv4 via API")
         for _ in range(60):
@@ -276,6 +279,7 @@ class Pve9(Target):
     # destroy()
     # ------------------------------------------------------------------ #
     def destroy(self, manifest: Manifest) -> None:
+        self._ensure_client(manifest)
         try:
             vmid = self._lookup_vmid_by_name(manifest.hostname)
         except RuntimeError:
@@ -336,8 +340,26 @@ class Pve9(Target):
             time.sleep(delay)
         raise TimeoutError(f"PVE task {upid} did not complete in {attempts*delay:.0f}s")
 
-    def _load_token(self) -> str:
-        provider = secret_providers.get("local")()
+    def _ensure_client(self, manifest: Manifest) -> None:
+        """Lazily resolve the PVE token (with hostname overlay) + build the
+        httpx client. Idempotent — subsequent calls are no-ops.
+
+        Token loading is deferred (vs. __init__) so that the manifest's
+        hostname is known and can be bound on the secret provider — that
+        lets `proxmox/api-token` live under a per-hostname YAML overlay.
+        """
+        if self._client is not None:
+            return
+        self.token = self._load_token(manifest)
+        self._client = httpx.Client(
+            verify=self.verify_tls,
+            timeout=self.api_timeout,
+            headers={"Authorization": f"PVEAPIToken={self.token}"},
+        )
+
+    def _load_token(self, manifest: Manifest) -> str:
+        provider = secret_providers.get(manifest.secret_provider)()
+        provider.bind_hostname(manifest.hostname)
         try:
             return provider.get("proxmox/api-token")
         except Exception as e:
@@ -349,15 +371,16 @@ class Pve9(Target):
 
     def _resolve_vmid(self, manifest: Manifest) -> int:
         """Pick a VMID. Order:
-            1. manifest.target_config.proxmox.vmid (if present in YAML extras)
+            1. manifest.proxmox.vmid (typed, validated, the documented path)
             2. Existing VM with same name (idempotent re-deploy)
             3. /cluster/nextid (auto-allocate)
+
+        Pinning a VMID is the right thing to do when the operator uses a
+        grouped numbering scheme (e.g. 7xxxx for k3s control-plane VMs).
+        Auto-allocate is fine for ephemeral experiments.
         """
-        # extra fields on the Manifest end up accessible via .model_extra
-        extras = (manifest.model_extra or {}) if hasattr(manifest, "model_extra") else {}
-        pve_cfg = extras.get("proxmox") if isinstance(extras, dict) else None
-        if isinstance(pve_cfg, dict) and pve_cfg.get("vmid") is not None:
-            return int(pve_cfg["vmid"])
+        if manifest.proxmox is not None and manifest.proxmox.vmid is not None:
+            return manifest.proxmox.vmid
         try:
             return self._lookup_vmid_by_name(manifest.hostname)
         except RuntimeError:
