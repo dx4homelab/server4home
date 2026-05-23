@@ -1,0 +1,43 @@
+base: k3s-base
+hostname: k3s-test-on-virt-manager
+target: local-virt-manager
+# target: pve9 # proxmox pve 9
+disks:
+  - path: /var/lib/rancher
+    size: 60G
+    type: lvm
+network:
+  - name: default
+    type: bridge
+    mac: 
+      provisioner: default # default
+      # provisioner: ifra # infra API the default
+      # provisioner: fixed # then use mac.value
+      # fixed: 52:54:00:6b:3c:58
+    ip:
+      # Switched to static while we get qemu-guest-agent into the image and
+      # `brew install arp-scan` lands on the workstation. Once either is in
+      # place, this can flip back to `provisioner: dhcp`.
+      provisioner: static
+      static: 192.168.180.10/16        # ADJUST: pick a free IP on your LAN
+      gateway: 192.168.1.1
+      dns: 192.168.1.1
+install:
+  - name: k3s
+    version: v1.35.4+k3s1
+    args:
+      - --disable=traefik
+      - --disable=servicelb
+
+  - name: rancher-manager
+    version: v2.14.1
+    config:
+      hostname: rancher0ucore.local.homelabsolutions.net
+      ingress:
+        enabled: true
+        hosts:
+          - rancher0ucore.local.homelabsolutions.net
+        tls:
+          - secretName: rancher-tls-secret-homelab
+            hosts:
+              - rancher0ucore.local.homelabsolutions.net

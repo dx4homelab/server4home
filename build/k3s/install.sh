@@ -14,6 +14,14 @@ set -euo pipefail
 # `virsh domifaddr --source agent`, which is the most reliable IP discovery
 # path for bridge-attached guests.
 dnf install -y qemu-guest-agent
+
+# Firewalld conflicts with K3s networking (CNI, kube-api on 6443, kubelet
+# on 10250, flannel on UDP 8472). The K3s upstream docs explicitly say to
+# disable it. Removing the package outright is the cleanest path on an
+# immutable image — `systemctl mask` in /etc doesn't survive bootc deploys
+# because /etc is overlay-managed on Fedora CoreOS.
+dnf remove -y firewalld || true
+
 dnf clean all
 
 # K3s binary. URL-encode the '+' that appears in K3s version tags.

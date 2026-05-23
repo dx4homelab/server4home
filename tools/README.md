@@ -128,18 +128,75 @@ Override the store path with `$S4H_SECRETS_FILE`, or the provider with the
 manifest's top-level `secret_provider:` key. A future `ifra` provider will
 fetch from the homelab inventory API — the manifest stays identical.
 
+### Pre-staging Kubernetes secrets (TLS, registry creds, …)
+
+The `kubernetes-secret` installer creates a Kubernetes Secret on the cluster
+before any chart that needs it runs. Combined with `{ secret: ... }`
+references in the manifest, it's the path to automated TLS ingress for
+Rancher (or anything else) using your homelab CA:
+
+```yaml
+install:
+  - name: kubernetes-secret
+    config:
+      name: tls-rancher-ingress
+      namespace: cattle-system
+      type: tls                                    # → kubernetes.io/tls
+      data:
+        tls.crt: { secret: "tls/rancher.crt" }
+        tls.key: { secret: "tls/rancher.key" }
+
+  - name: kubernetes-secret                        # Rancher's privateCA
+    config:
+      name: tls-ca
+      namespace: cattle-system
+      type: opaque
+      data:
+        cacerts.pem: { secret: "tls/ca.crt" }
+
+  - name: rancher-manager
+    version: v2.14.1
+    config:
+      hostname: rancher.lan.example.com
+      ingress:
+        tls:
+          source: secret                           # uses tls-rancher-ingress
+      privateCA: true                              # uses tls-ca
+```
+
+Installers run in manifest order, so the secrets exist before the Helm chart
+applies. The installer creates the namespace idempotently first, so this
+works even before `helm install --create-namespace` runs.
+
+The PEM contents come from the local secret store. For multi-line values,
+use a YAML literal block in `secrets/secrets.yaml`:
+
+```yaml
+"tls/rancher.crt": |
+  -----BEGIN CERTIFICATE-----
+  MIID…
+  -----END CERTIFICATE-----
+"tls/rancher.key": |
+  -----BEGIN PRIVATE KEY-----
+  MIIE…
+  -----END PRIVATE KEY-----
+```
+
+Accepted `type` values: `opaque`, `tls`, `basic-auth`, `ssh-auth`,
+`dockerconfigjson`, or any full `kubernetes.io/*` type string verbatim.
+
 ## Plugin architecture
 
 Five extension points, each backed by a `Registry` in
 [`server4home/registry.py`](server4home/registry.py):
 
-| Registry           | Lives in                          | Built-ins                                |
-| ------------------ | --------------------------------- | ---------------------------------------- |
-| `targets`          | `server4home/targets/`            | `local-virt-manager`, `pve9` (stub)      |
-| `mac_provisioners` | `server4home/provisioners/mac.py` | `default`, `fixed`, `ifra` (stub)        |
-| `ip_provisioners`  | `server4home/provisioners/ip.py`  | `dhcp`, `static`                         |
-| `installers`       | `server4home/installers/`         | `k3s`, `cert-manager`, `rancher-manager` |
-| `secret_providers` | `server4home/secrets/`            | `local`                                  |
+| Registry           | Lives in                          | Built-ins                                                     |
+| ------------------ | --------------------------------- | ------------------------------------------------------------- |
+| `targets`          | `server4home/targets/`            | `local-virt-manager`, `pve9` (stub)                           |
+| `mac_provisioners` | `server4home/provisioners/mac.py` | `default`, `fixed`, `ifra` (stub)                             |
+| `ip_provisioners`  | `server4home/provisioners/ip.py`  | `dhcp`, `static`                                              |
+| `installers`       | `server4home/installers/`         | `k3s`, `cert-manager`, `rancher-manager`, `kubernetes-secret` |
+| `secret_providers` | `server4home/secrets/`            | `local`                                                       |
 
 ### Adding a new plugin
 

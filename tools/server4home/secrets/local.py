@@ -55,10 +55,29 @@ class LocalSecretProvider(SecretProvider):
 
     def get(self, name: str) -> str:
         self._load()
-        try:
+        # 1) Look up in secrets.yaml first (short strings: tokens, passwords).
+        if name in self._store:
             return self._store[name]
-        except KeyError:
+        # 2) Fall back to a file under the secret store's root. The name is
+        #    treated as a path relative to that root, so a manifest reference
+        #    like {secret: "tls/rancher.crt"} reads secrets/tls/rancher.crt
+        #    on disk. Path traversal outside the root is rejected.
+        root = self.path.parent.resolve()
+        candidate = (root / name).resolve()
+        try:
+            candidate.relative_to(root)
+        except ValueError:
             raise SecretNotFound(
-                f"secret '{name}' not found in {self.path}. "
-                f"Add it there (the file is gitignored)."
+                f"secret name '{name}' escapes the secret store root ({root})"
             ) from None
+        if candidate.is_file():
+            try:
+                return candidate.read_text(encoding="utf-8")
+            except OSError as e:
+                raise SecretNotFound(
+                    f"could not read secret file {candidate}: {e}"
+                ) from e
+        raise SecretNotFound(
+            f"secret '{name}' not found (looked in {self.path} and {candidate}). "
+            f"Add it to the YAML store or drop a file at the path shown."
+        )

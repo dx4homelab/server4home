@@ -199,7 +199,7 @@ Five extension points, all in [`tools/server4home/registry.py`](../tools/server4
 | `targets` | `tools/server4home/targets/` | `local-virt-manager`, `pve9` (stub) |
 | `mac_provisioners` | `tools/server4home/provisioners/mac.py` | `default`, `fixed`, `ifra` (stub) |
 | `ip_provisioners` | `tools/server4home/provisioners/ip.py` | `dhcp`, `static` |
-| `installers` | `tools/server4home/installers/` | `k3s`, `cert-manager`, `rancher-manager` |
+| `installers` | `tools/server4home/installers/` | `k3s`, `cert-manager`, `rancher-manager`, `kubernetes-secret` |
 | `secret_providers` | `tools/server4home/secrets/` | `local` |
 
 Adding a plugin is purely additive: subclass the right ABC, add a
@@ -263,6 +263,23 @@ sequenceDiagram
         k3s->>k3s: k3s server (reads /etc/rancher/k3s/config.yaml + .d)
     end
 ```
+
+---
+
+### No firewalld in the image — by design
+
+The base ucore-hci image ships `firewalld` with the FedoraServer zone, which
+allows only `cockpit / dhcpv6-client / ssh`. K3s needs at minimum 6443
+(kube-api), 10250 (kubelet), and 8472/UDP (flannel) reachable from peers
+and clients — firewalld's defaults reject those with
+`icmp-host-unreachable`, producing exactly "no route to host" on kubectl /
+helm calls. The K3s upstream docs explicitly say to disable firewalld for
+this reason.
+
+The K3s image therefore **removes the firewalld package** at build time
+([build/k3s/install.sh](../build/k3s/install.sh)). If you need a host
+firewall, layer one on top per-VM (nftables rules dropped at first boot)
+rather than putting firewalld back in the image.
 
 ---
 
