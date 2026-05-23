@@ -1,4 +1,14 @@
 ---
+# Single-job sequential build: base + K3s share local containers-storage so
+# the K3s `FROM ${BASE_IMAGE}` resolves without a registry round-trip. This
+# shape is the right answer for 2 images with a parent-child relationship.
+#
+# When you add a third leaf flavor (RKE2, MicroK8s, multi-arch, alternate
+# kernel streams, …), refactor to two jobs:
+#   1) build_base  (one runner, pushes by digest)
+#   2) build_variants  (matrix over flavors, pins base by @digest)
+# Full copy-paste-ready recipe + pitfalls:
+#   docs/ci-build-matrix-refactor.md
 name: Build container image
 on:
   pull_request:
@@ -22,7 +32,7 @@ env:
   DEFAULT_TAG: "stable"
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref || github.run_id }}-${{ inputs.brand_name}}-${{ inputs.stream_name }}
+  group: ${{ github.workflow }}-${{ github.ref || github.run_id }}
   cancel-in-progress: true
 
 jobs:
