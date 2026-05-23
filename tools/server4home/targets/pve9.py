@@ -15,7 +15,8 @@ from .base import CreateResult, Target
 
 @targets.register("pve9")
 class Pve9(Target):
-    def create(self, manifest: Manifest) -> CreateResult:
+    def create(self, manifest: Manifest, *,
+               wipe_data: bool = False) -> CreateResult:
         raise NotImplementedError(
             "target='pve9' is not implemented in this iteration. "
             "Use helpers/proxmox/create-rancher-vm.sh manually, "

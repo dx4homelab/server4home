@@ -16,7 +16,7 @@ network:
       provisioner: default
     ip:
       provisioner: static
-      static: 192.168.50.10/16       # ADJUST: pick a free IP on your LAN  
+      static: 192.168.130.10/16       # ADJUST: pick a free IP on your LAN  
       gateway: 192.168.1.1
       dns: 192.168.1.1
 
@@ -24,8 +24,16 @@ install:
   - name: k3s
     version: v1.35.4+k3s1
     args:
-      - --disable=traefik
+      # Traefik stays enabled; MetalLB hands it the VIP below.
+      # ServiceLB is replaced by MetalLB.
       - --disable=servicelb
+
+  # L4 LoadBalancer for the cluster. The VIP becomes Traefik's external IP;
+  # DNS for rancher0ucore.local.homelabsolutions.net should point here.
+  - name: metallb
+    version: 0.15.3                     # 0.16.0 has an upstream chart template bug; bump when fixed
+    config:
+      vip: 192.168.130.50               # ADJUST: free IP on your LAN, distinct from node IP
 
   # Pre-stage the wildcard cert + key as the secret Rancher's ingress reads
   - name: kubernetes-secret

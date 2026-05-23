@@ -110,21 +110,59 @@ class SSH:
             "-o", "BatchMode=yes",
         ]
 
+    # --- probe / wait helpers ---------------------------------------- #
     def reachable(self, timeout: int = 3) -> bool:
+        ok, _ = self._probe(timeout=timeout)
+        return ok
+
+    def _probe(self, timeout: int = 3) -> tuple[bool, str]:
+        """Single SSH probe. Returns (ok, stderr_text)."""
         cmd = self._base + ["-o", f"ConnectTimeout={timeout}",
                             f"{self.user}@{self.host}", "true"]
-        # Polling probe — never log per-attempt.
-        return subprocess.run(cmd, capture_output=True).returncode == 0
+        p = subprocess.run(cmd, capture_output=True, text=True)
+        return p.returncode == 0, (p.stderr or "")
+
+    def clear_known_hosts(self) -> None:
+        """Drop any stale host-key entries for self.host.
+
+        Every VM rebuild generates fresh SSH host keys at first boot, so the
+        cached entry in ~/.ssh/known_hosts from the previous incarnation
+        would otherwise produce "Host key verification failed" — invisible
+        in our silent polling loop and indistinguishable from "not up yet."
+        """
+        rc = subprocess.run(
+            ["ssh-keygen", "-R", self.host],
+            capture_output=True,
+        ).returncode
+        if rc == 0:
+            log.info("Cleared stale known_hosts entries for %s", self.host)
+        else:
+            log.warning("ssh-keygen -R %s returned rc=%d (continuing)",
+                        self.host, rc)
 
     def wait_reachable(self, attempts: int = 60, delay: float = 5.0) -> None:
+        # Clean known_hosts first so a changed host key doesn't make us
+        # hang silently for 5 minutes.
+        self.clear_known_hosts()
+
         log.info("Waiting for SSH on %s@%s (polling silently)", self.user, self.host)
+        first_err: str | None = None
         for _ in range(attempts):
-            if self.reachable():
+            ok, err = self._probe(timeout=int(delay))
+            if ok:
                 log.info("SSH reachable")
                 return
+            if first_err is None and err.strip():
+                # Surface the very first failure reason so a recurring failure
+                # never hangs silently again. Subsequent identical errors stay
+                # quiet to keep the polling loop unspammy.
+                first_err = err.strip().replace("\n", " | ")
+                log.warning("first SSH probe error (will keep polling): %s", first_err)
             time.sleep(delay)
-        raise TimeoutError(f"SSH on {self.host} not reachable within "
-                           f"{attempts * delay:.0f}s")
+        raise TimeoutError(
+            f"SSH on {self.host} not reachable within {attempts * delay:.0f}s. "
+            f"Last logged reason: {first_err or '(none captured)'}"
+        )
 
     def run(self, remote_cmd: str, *, sudo: bool = False,
             check: bool = True, capture: bool = False) -> subprocess.CompletedProcess:

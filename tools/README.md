@@ -185,18 +185,56 @@ use a YAML literal block in `secrets/secrets.yaml`:
 Accepted `type` values: `opaque`, `tls`, `basic-auth`, `ssh-auth`,
 `dockerconfigjson`, or any full `kubernetes.io/*` type string verbatim.
 
+### LoadBalancer for the cluster (MetalLB + VIP)
+
+K3s ships its own ServiceLB (klipper-lb), which the manifest disables in
+favor of MetalLB. MetalLB hands K8s `Service`s of type `LoadBalancer` a
+real IP from a pool you control — including K3s's bundled Traefik, which
+becomes the L7 ingress point at a stable VIP.
+
+```yaml
+install:
+  - name: k3s
+    args:
+      # Traefik stays enabled (default). servicelb is replaced by MetalLB.
+      - --disable=servicelb
+
+  - name: metallb
+    version: 0.15.3              # 0.16.0 has an upstream chart bug; bump later
+    config:
+      vip: 192.168.130.50        # single-VIP shortcut → /32 pool
+      # or, for a range:
+      # pool:
+      #   addresses: [192.168.130.50-192.168.130.59]
+```
+
+What happens at deploy time:
+
+1. The Helm chart installs MetalLB into `metallb-system` (controller +
+   speaker DaemonSet).
+2. The installer creates a default `IPAddressPool` and `L2Advertisement`
+   so the VIP is announced on the LAN via gratuitous ARP.
+3. K3s's Traefik service (type `LoadBalancer`, no IP until now) gets the
+   VIP assigned. `kubectl -n kube-system get svc traefik` shows the VIP
+   under `EXTERNAL-IP`.
+4. Point your DNS for `rancher0ucore.local.example.com` (and any other
+   future ingresses) at the VIP, not at any specific node.
+
+L2 mode only in v1; BGP would need a BGP-capable upstream router and
+extra `BGPPeer` / `BGPAdvertisement` configuration.
+
 ## Plugin architecture
 
 Five extension points, each backed by a `Registry` in
 [`server4home/registry.py`](server4home/registry.py):
 
-| Registry           | Lives in                          | Built-ins                                                     |
-| ------------------ | --------------------------------- | ------------------------------------------------------------- |
-| `targets`          | `server4home/targets/`            | `local-virt-manager`, `pve9` (stub)                           |
-| `mac_provisioners` | `server4home/provisioners/mac.py` | `default`, `fixed`, `ifra` (stub)                             |
-| `ip_provisioners`  | `server4home/provisioners/ip.py`  | `dhcp`, `static`                                              |
-| `installers`       | `server4home/installers/`         | `k3s`, `cert-manager`, `rancher-manager`, `kubernetes-secret` |
-| `secret_providers` | `server4home/secrets/`            | `local`                                                       |
+| Registry           | Lives in                          | Built-ins                                                                |
+| ------------------ | --------------------------------- | ------------------------------------------------------------------------ |
+| `targets`          | `server4home/targets/`            | `local-virt-manager`, `pve9` (stub)                                      |
+| `mac_provisioners` | `server4home/provisioners/mac.py` | `default`, `fixed`, `ifra` (stub)                                        |
+| `ip_provisioners`  | `server4home/provisioners/ip.py`  | `dhcp`, `static`                                                         |
+| `installers`       | `server4home/installers/`         | `k3s`, `cert-manager`, `rancher-manager`, `kubernetes-secret`, `metallb` |
+| `secret_providers` | `server4home/secrets/`            | `local`                                                                  |
 
 ### Adding a new plugin
 

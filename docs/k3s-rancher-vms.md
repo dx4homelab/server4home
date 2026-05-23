@@ -199,7 +199,7 @@ Five extension points, all in [`tools/server4home/registry.py`](../tools/server4
 | `targets` | `tools/server4home/targets/` | `local-virt-manager`, `pve9` (stub) |
 | `mac_provisioners` | `tools/server4home/provisioners/mac.py` | `default`, `fixed`, `ifra` (stub) |
 | `ip_provisioners` | `tools/server4home/provisioners/ip.py` | `dhcp`, `static` |
-| `installers` | `tools/server4home/installers/` | `k3s`, `cert-manager`, `rancher-manager`, `kubernetes-secret` |
+| `installers` | `tools/server4home/installers/` | `k3s`, `cert-manager`, `rancher-manager`, `kubernetes-secret`, `metallb` |
 | `secret_providers` | `tools/server4home/secrets/` | `local` |
 
 Adding a plugin is purely additive: subclass the right ABC, add a
@@ -265,6 +265,34 @@ sequenceDiagram
 ```
 
 ---
+
+### Data-disk identity check (preserved state vs. manifest hostname)
+
+`just deploy` preserves the LVM data disk across re-deploys — great when
+you're just refreshing the OS (bootc upgrade pattern), but it bites when
+the cluster's identity (hostname → etcd member name, certs) changes between
+deploys. Symptoms: K3s restart-loops with `Detected member only in v3store
+but missing in v2store` or the apiserver flapping between Ready and
+NotReady.
+
+The runner guards against this with an **identity sidecar**. When it
+creates the data disk, it writes
+`/var/lib/libvirt/images/<vm>-data.meta.json` recording the manifest
+hostname (and a few other identity bits). On every subsequent
+`just deploy`, before any destructive action, the runner reads the
+sidecar and refuses with `IdentityMismatchError` if the manifest's
+`hostname:` no longer matches what the data disk was created for. The
+error includes the exact command to recover:
+
+```bash
+just deploy-fresh instances/<your-manifest>.yaml
+# equivalent: server4home deploy --wipe-data instances/<your-manifest>.yaml
+```
+
+`deploy-fresh` removes the data disk + sidecar, then runs the normal
+deploy, so K3s starts on truly fresh state. (`just destroy` also removes
+the sidecar — `--remove-all-storage` doesn't, because the sidecar lives
+outside libvirt's pool bookkeeping.)
 
 ### No firewalld in the image — by design
 
@@ -337,15 +365,86 @@ Scheduled snapshots can be enabled via `config.yaml`
 
 ### Upgrade a VM via bootc
 
+CI publishes two images on every push to `main` and on the nightly cron
+([.github/workflows/build.yml](../.github/workflows/build.yml)):
+
+- `ghcr.io/dx4homelab/server4home` (base)
+- `ghcr.io/dx4homelab/server4home-k3s` (K3s flavor — what your VMs run)
+
+Each image is tagged `stable`, `stable.<YYYYMMDD>`, and `<YYYYMMDD>` (plus
+`sha-…` for PR builds). The date-stamped tags are de-facto immutable;
+`stable` rolls. Both images are cosign-signed using the repo's
+`SIGNING_SECRET`.
+
 ```bash
-# First-time switch to a registry-hosted image:
+# First time on a VM that doesn't yet point at the registry — only once:
 sudo bootc switch ghcr.io/dx4homelab/server4home-k3s:stable
+
 # Subsequent upgrades:
-sudo bootc upgrade --apply
+sudo bootc upgrade --apply          # --apply auto-reboots
+
+# Pin to a specific build (recommended for HA control-plane nodes —
+# upgrade one node at a time, verify, then roll forward the others):
+sudo bootc switch ghcr.io/dx4homelab/server4home-k3s:stable.20260523
+
+# Inspect current and staged deployments:
+bootc status
 ```
 
-The root deployment swaps atomically; `/var/lib/rancher` is on a different
-disk and is untouched. `sudo bootc rollback` reverts to the prior deployment.
+The root deployment swaps atomically. `/var/lib/rancher` is on the data
+disk, untouched by `bootc upgrade`, so K3s's etcd and certs survive — the
+node rejoins its cluster after reboot with the same identity. If the new
+image regresses, `sudo bootc rollback` reverts to the previous deployment
+on the next boot.
+
+### Making the GHCR packages pullable from VMs
+
+GHCR container packages start **private** even when the source repo is
+public. One-time setup so VMs can `bootc upgrade` anonymously:
+
+1. Browse `https://github.com/dx4homelab?tab=packages` → click each
+   package (`server4home`, `server4home-k3s`).
+2. Package settings → "Change package visibility" → **Public**.
+3. (Optional) "Manage Actions access" → ensure the source repo is
+   permitted so future workflow runs can keep pushing.
+
+Or via gh CLI:
+
+```bash
+gh api --method PATCH /user/packages/container/server4home   -f visibility=public
+gh api --method PATCH /user/packages/container/server4home-k3s -f visibility=public
+```
+
+(Substitute `/orgs/<org>/...` if publishing under an organization.)
+
+### Verifying cosign signatures on a VM (optional)
+
+To require valid signatures before `bootc upgrade` accepts an image:
+
+```bash
+# Extract the public key from your local cosign.key (one-time, on the
+# workstation where you keep the key):
+cosign public-key --key cosign.key > cosign.pub
+
+# On the VM:
+sudo install -m 0644 cosign.pub /etc/pki/containers/server4home.pub
+sudo tee /etc/containers/policy.json >/dev/null <<'JSON'
+{
+  "default": [{"type": "insecureAcceptAnything"}],
+  "transports": {
+    "docker": {
+      "ghcr.io/dx4homelab": [{
+        "type": "sigstoreSigned",
+        "keyPath": "/etc/pki/containers/server4home.pub"
+      }]
+    }
+  }
+}
+JSON
+```
+
+After this, an unsigned or tampered image in `ghcr.io/dx4homelab/*` causes
+`bootc upgrade` to refuse.
 
 ### Cluster admin
 

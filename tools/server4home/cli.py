@@ -33,14 +33,21 @@ def cli() -> None:
 @click.option("--kubeconfig-dir", default="./kubeconfigs",
               show_default=True, type=click.Path(file_okay=False),
               help="Directory to store the fetched kubeconfig.")
+@click.option("--wipe-data", is_flag=True, default=False,
+              help="Drop the preserved per-VM data disk + identity meta "
+                   "before deploying. Use when the cluster identity has "
+                   "changed (different hostname); otherwise the deploy "
+                   "refuses on identity mismatch.")
 def deploy_cmd(manifest_path: str, ssh_user: str | None,
-               ssh_key: str | None, kubeconfig_dir: str) -> None:
+               ssh_key: str | None, kubeconfig_dir: str,
+               wipe_data: bool) -> None:
     """Provision a VM and apply all install: entries from MANIFEST_PATH."""
     manifest = Manifest.load(manifest_path)
     runner.deploy(
         manifest,
         ssh_user=ssh_user, ssh_key=ssh_key,
         kubeconfig_dir=kubeconfig_dir,
+        wipe_data=wipe_data,
     )
 
 

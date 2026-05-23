@@ -9,20 +9,26 @@ for static IP and the hostname-exact marker).
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 from ..manifest import Manifest
 from ..registry import ip_provisioners, mac_provisioners, targets
 from ..util import SSH, CommandError, log, require_tool, run
-from .base import CreateResult, Target
+from .base import CreateResult, IdentityMismatchError, Target
 
 LIBVIRT_POOL = Path(os.environ.get("LIBVIRT_POOL", "/var/lib/libvirt/images"))
 LIBVIRT_BRIDGE = os.environ.get("LIBVIRT_BRIDGE", "br0")
 QCOW2_SRC = Path(os.environ.get("QCOW2_SRC", "output/qcow2/disk.qcow2"))
+
+# Schema version for the data-disk meta sidecar. Bump when fields change in
+# an incompatible way.
+DATA_DISK_META_SCHEMA = 1
 
 
 @targets.register("local-virt-manager")
@@ -36,7 +42,8 @@ class LocalVirtManager(Target):
     # ------------------------------------------------------------------ #
     # create()
     # ------------------------------------------------------------------ #
-    def create(self, manifest: Manifest) -> CreateResult:
+    def create(self, manifest: Manifest, *,
+               wipe_data: bool = False) -> CreateResult:
         if not QCOW2_SRC.is_file():
             raise RuntimeError(
                 f"qcow2 source not found at {QCOW2_SRC}. "
@@ -46,10 +53,21 @@ class LocalVirtManager(Target):
         vm = manifest.hostname
         dst = LIBVIRT_POOL / f"{vm}.qcow2"
         data_dst = LIBVIRT_POOL / f"{vm}-data.qcow2"
+        meta_path = self._meta_path_for(vm)
 
         run(["sudo", "systemctl", "enable", "--now", "libvirtd.socket"])
 
-        # Tear down a previous domain with this name (idempotent re-deploy).
+        # Pre-flight identity check (read-only; no side effects). A
+        # preserved data disk whose recorded identity doesn't match this
+        # manifest would silently break the next K3s start (etcd certs and
+        # node identity are baked into the disk's state). Refuse early.
+        data_size = self._data_disk_size_for_rancher(manifest)
+        if data_size and data_dst.exists() and not wipe_data:
+            self._check_data_disk_identity(meta_path, manifest, data_dst)
+
+        # Tear down a previous domain with this name FIRST (preserves storage)
+        # — done before the static-IP pre-flight check below so our own old
+        # VM at the same address doesn't register as a conflict.
         if self._domain_exists(vm):
             log.info("Domain '%s' exists; destroying and undefining", vm)
             run(["sudo", "virsh", "destroy", vm], check=False)
@@ -57,6 +75,19 @@ class LocalVirtManager(Target):
                 run(["sudo", "virsh", "undefine", vm, "--nvram"])
             except CommandError:
                 run(["sudo", "virsh", "undefine", vm])
+            # Give the bridge a moment to forget the old MAC's ARP entry.
+            time.sleep(2)
+
+        # Pre-flight: if the manifest pins a static IP, make sure nobody on
+        # the LAN already owns it. Fails fast instead of letting the deploy
+        # hang on SSH-wait when NetworkManager refuses the duplicate address.
+        self._preflight_static_ip(manifest)
+
+        # If --wipe-data, drop the data disk + meta sidecar now (before
+        # virt-install so the next step starts from a clean state).
+        if wipe_data and (data_dst.exists() or meta_path.exists()):
+            log.info("--wipe-data: removing existing data disk and meta sidecar")
+            run(["sudo", "rm", "-f", str(data_dst), str(meta_path)])
 
         # Copy boot disk into the pool.
         log.info("Copying qcow2 to libvirt pool: %s", dst)
@@ -65,15 +96,15 @@ class LocalVirtManager(Target):
 
         # Optional data disk for /var/lib/rancher.
         disk_args: list[str] = ["--disk", f"path={dst},format=qcow2,bus=virtio"]
-        data_size = self._data_disk_size_for_rancher(manifest)
         if data_size:
             if data_dst.exists():
-                log.info("Reusing existing data disk: %s", data_dst)
+                log.info("Reusing existing data disk: %s (identity matches)", data_dst)
             else:
                 log.info("Creating data disk %s (%s)", data_dst, data_size)
                 run(["sudo", "qemu-img", "create", "-f", "qcow2",
                      str(data_dst), data_size])
                 run(["sudo", "chown", "qemu:qemu", str(data_dst)])
+                self._write_data_disk_meta(meta_path, manifest, data_size)
             disk_args += ["--disk", f"path={data_dst},format=qcow2,bus=virtio"]
 
         # Resolve MAC + IP via provisioners.
@@ -204,18 +235,81 @@ class LocalVirtManager(Target):
 
     def destroy(self, manifest: Manifest) -> None:
         vm = manifest.hostname
-        if not self._domain_exists(vm):
+        meta_path = self._meta_path_for(vm)
+        if self._domain_exists(vm):
+            run(["sudo", "virsh", "destroy", vm], check=False)
+            try:
+                run(["sudo", "virsh", "undefine", vm, "--nvram", "--remove-all-storage"])
+            except CommandError:
+                run(["sudo", "virsh", "undefine", vm, "--remove-all-storage"])
+        else:
             log.info("Domain '%s' does not exist; nothing to destroy", vm)
-            return
-        run(["sudo", "virsh", "destroy", vm], check=False)
-        try:
-            run(["sudo", "virsh", "undefine", vm, "--nvram", "--remove-all-storage"])
-        except CommandError:
-            run(["sudo", "virsh", "undefine", vm, "--remove-all-storage"])
+        # Always clean the meta sidecar — it lives outside libvirt's pool
+        # bookkeeping so `--remove-all-storage` doesn't touch it.
+        if meta_path.exists():
+            run(["sudo", "rm", "-f", str(meta_path)], quiet=True)
 
     # ------------------------------------------------------------------ #
     # internals
     # ------------------------------------------------------------------ #
+    @staticmethod
+    def _meta_path_for(vm: str) -> Path:
+        return LIBVIRT_POOL / f"{vm}-data.meta.json"
+
+    def _check_data_disk_identity(self, meta_path: Path,
+                                  manifest: Manifest, data_dst: Path) -> None:
+        """Raise IdentityMismatchError if preserved data disk identity
+        diverges from the manifest. Read-only, no side effects."""
+        meta = self._read_data_disk_meta(meta_path)
+        wipe_hint = (
+            "To wipe the preserved data and start fresh:\n"
+            "    just deploy-fresh <manifest.yaml>\n"
+            "(equivalently: `server4home deploy --wipe-data <manifest.yaml>`)"
+        )
+        if meta is None:
+            raise IdentityMismatchError(
+                f"Data disk exists at {data_dst} but its identity metadata "
+                f"({meta_path}) is missing or unreadable — cannot verify "
+                f"safe reuse. {wipe_hint}"
+            )
+        previous = meta.get("manifest_hostname")
+        if previous != manifest.hostname:
+            raise IdentityMismatchError(
+                f"Data disk at {data_dst} was created for hostname "
+                f"'{previous}'; current manifest hostname is "
+                f"'{manifest.hostname}'. Reusing it would mismatch the "
+                f"cluster identity baked into etcd and certs. {wipe_hint}"
+            )
+
+    @staticmethod
+    def _read_data_disk_meta(meta_path: Path) -> dict | None:
+        if not meta_path.exists():
+            return None
+        try:
+            out = run(["sudo", "cat", str(meta_path)],
+                      capture=True, check=False, quiet=True).stdout
+            return json.loads(out)
+        except (json.JSONDecodeError, ValueError) as e:
+            log.warning("could not parse %s: %s", meta_path, e)
+            return None
+
+    @staticmethod
+    def _write_data_disk_meta(meta_path: Path, manifest: Manifest,
+                              size: str) -> None:
+        payload = {
+            "schema": DATA_DISK_META_SCHEMA,
+            "manifest_hostname": manifest.hostname,
+            "k3s_mode": manifest.k3s_mode(),
+            "k3s_datastore": manifest.k3s_datastore(),
+            "data_disk_size": size,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+        body = json.dumps(payload, indent=2, sort_keys=True) + "\n"
+        run(["sudo", "tee", str(meta_path)],
+            input_text=body, capture=True, quiet=True)
+        run(["sudo", "chmod", "0644", str(meta_path)], quiet=True)
+        log.info("Wrote data-disk identity meta: %s", meta_path)
+
     @staticmethod
     def _domain_exists(name: str) -> bool:
         return run(["sudo", "virsh", "dominfo", name],
@@ -263,6 +357,45 @@ class LocalVirtManager(Target):
                     if not addr.startswith("127."):
                         return addr
         return None
+
+    @staticmethod
+    def _preflight_static_ip(manifest: Manifest) -> None:
+        """Abort early if a manifest-pinned static IP is already in use.
+
+        Runs after the prior domain (by name) has been torn down, so it only
+        catches conflicts with *other* devices on the LAN — exactly what we
+        want. NetworkManager's duplicate-address detection would otherwise
+        reject the address silently and the deploy would hang at SSH-wait.
+        """
+        if manifest.primary_network.ip.provisioner != "static":
+            return
+        addr = (manifest.primary_network.ip.static or "").split("/")[0]
+        if not addr:
+            return
+        log.info("Pre-flight: pinging %s to verify it's free", addr)
+        rc = run(["ping", "-c", "2", "-W", "1", addr],
+                 check=False, capture=True, quiet=True).returncode
+        if rc != 0:
+            log.info("Pre-flight: %s is free.", addr)
+            return
+        # Try to identify the squatter for a useful error.
+        run(["ping", "-c", "1", "-W", "1", addr], check=False, capture=True, quiet=True)
+        neigh = run(["ip", "neigh"], capture=True, check=False, quiet=True).stdout
+        mac = ""
+        for line in neigh.splitlines():
+            parts = line.split()
+            if parts and parts[0] == addr:
+                # `<addr> dev <iface> lladdr <mac> STATE`
+                if "lladdr" in parts:
+                    mac = parts[parts.index("lladdr") + 1]
+                break
+        raise RuntimeError(
+            f"static IP {addr} is already in use on the LAN"
+            + (f" (responded by MAC {mac})" if mac else "")
+            + ". Pick a different address in the manifest, or set up a "
+              "DHCP reservation for this VM in pfSense and switch to "
+              "ip.provisioner=dhcp."
+        )
 
     @staticmethod
     def _data_disk_size_for_rancher(manifest: Manifest) -> str | None:

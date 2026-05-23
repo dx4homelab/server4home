@@ -16,11 +16,17 @@ from .util import SSH, log
 
 def deploy(manifest: Manifest, *, ssh_user: str | None = None,
            ssh_key: str | None = None,
-           kubeconfig_dir: str | Path = "./kubeconfigs") -> Path | None:
+           kubeconfig_dir: str | Path = "./kubeconfigs",
+           wipe_data: bool = False) -> Path | None:
     """Run the full deploy pipeline.
 
     Returns the path to the fetched kubeconfig, or None for an agent-only
     deploy (agents have no cluster API of their own).
+
+    ``wipe_data=True`` tells the target to drop any preserved per-VM data
+    (the LVM data disk + identity meta sidecar) before creating the VM —
+    necessary when the cluster identity has changed and you can't reuse the
+    previous etcd/certs.
     """
     ssh_user = ssh_user or os.environ.get("SSH_USER", "developer")
     ssh_key = ssh_key or os.environ.get("SSH_KEY", str(Path.home() / ".ssh" / "id_ed25519"))
@@ -35,7 +41,7 @@ def deploy(manifest: Manifest, *, ssh_user: str | None = None,
     # 1) Create the VM via the chosen target plugin.
     target_cls = targets.get(manifest.target)
     target = target_cls()
-    result = target.create(manifest)
+    result = target.create(manifest, wipe_data=wipe_data)
     log.info("VM created: name=%s mac=%s", result.vm_name, result.mac)
 
     # 2) Discover its IP.

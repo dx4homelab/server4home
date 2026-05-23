@@ -170,6 +170,14 @@ _python-env:
 deploy manifest: _python-env
     PATH="$PWD/.venv/bin:$PATH" .venv/bin/server4home deploy {{ manifest }}
 
+# Use when the cluster identity has changed (different hostname): the
+# preserved per-VM data disk + identity meta are dropped before deploying.
+
+# Deploy + drop preserved per-VM data disk (use when identity changed)
+[group('Deploy')]
+deploy-fresh manifest: _python-env
+    PATH="$PWD/.venv/bin:$PATH" .venv/bin/server4home deploy --wipe-data {{ manifest }}
+
 # Tear down a VM by manifest. Prompts for confirmation.
 [group('Deploy')]
 destroy manifest: _python-env

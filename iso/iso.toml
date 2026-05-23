@@ -7,9 +7,10 @@
 [customizations.installer.kickstart]
 contents = """
 %post
-# After installation, switch to the custom image from this repository
-# IMPORTANT: Update this URL to match your repository (ghcr.io/USERNAME/REPO:stable)
-bootc switch --mutate-in-place --transport registry ghcr.io/USERNAME/REPO:stable
+# After installation, switch to the K3s flavor published by CI. The Anaconda
+# installer wrote the *base* image to disk; this rebases the running root to
+# the K3s image so the node is K8s-ready on first boot.
+bootc switch --mutate-in-place --transport registry ghcr.io/dx4homelab/server4home-k3s:stable
 %end
 """
 
