@@ -19,3 +19,16 @@ class SecretProvider(ABC):
     @abstractmethod
     def get(self, name: str) -> str:
         """Return the secret value for `name`, or raise SecretNotFound."""
+
+    def bind_hostname(self, hostname: str | None) -> None:
+        """Optionally narrow subsequent get() calls to a manifest's hostname.
+
+        Providers MAY use this to implement per-host overlays — a YAML
+        section named after the hostname (or a filesystem subdir) that
+        shadows the global namespace. The default is a no-op: providers
+        without a hostname overlay simply ignore the hint.
+
+        Pass `None` to clear the binding (subsequent get()s see only the
+        global namespace again). The runner calls bind_hostname() once
+        before resolving each manifest's references.
+        """

@@ -1,0 +1,14 @@
+# server4home deployment history — JSON event ledger.
+#
+# Each `server4home deploy` (and, when it lands, `apply` / `destroy`) writes a
+# single JSON file here describing what happened: manifest path + git SHA,
+# target, VM IP/vmid, installer versions, outcome (with failed_step on
+# failures). The schema is documented in tools/server4home/history.py.
+#
+# These files are checked in to git — that's the durable record. Commit them
+# alongside the manifest changes that triggered the deploy. After committing,
+# regenerate the human-readable view:
+#
+#   just history          # rewrites docs/deployment-history.md
+#
+# This .gitkeep just ensures the directory exists in a fresh clone.

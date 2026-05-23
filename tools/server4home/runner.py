@@ -7,7 +7,7 @@ import subprocess
 import time
 from pathlib import Path
 
-from . import secretref
+from . import history, secretref
 from .installers.base import InstallContext
 from .manifest import Manifest
 from .registry import installers, secret_providers, targets
@@ -38,59 +38,78 @@ def deploy(manifest: Manifest, *, ssh_user: str | None = None,
     mode = manifest.k3s_mode()
     log.info("K3s mode: %s", mode)
 
-    # 1) Create the VM via the chosen target plugin.
-    target_cls = targets.get(manifest.target)
-    target = target_cls()
-    result = target.create(manifest, wipe_data=wipe_data)
-    log.info("VM created: name=%s mac=%s", result.vm_name, result.mac)
+    # The recorder captures phase, vm/image facts, and installer outcomes,
+    # then writes a single JSON file to deployments/ on __exit__ (success
+    # OR failure). See server4home/history.py.
+    with history.record(manifest, kind="deploy") as rec:
+        # Identify the image early so even an early failure has a record.
+        rec.set_image(
+            ref=f"localhost/{manifest.image_ref()}:stable",
+            k3s_version=_extract_k3s_version(manifest),
+        )
 
-    # 2) Discover its IP.
-    ip = target.discover_ip(manifest, result.mac)
-    log.info("VM IP: %s", ip)
+        # 1) Create the VM via the chosen target plugin.
+        target_cls = targets.get(manifest.target)
+        target = target_cls()
+        result = target.create(manifest, wipe_data=wipe_data)
+        log.info("VM created: name=%s mac=%s", result.vm_name, result.mac)
+        rec.set_vm(name=result.vm_name, mac=result.mac)
 
-    # 3) SSH + InstallContext.
-    ssh = SSH(host=ip, user=ssh_user, key=ssh_key)
-    ssh.wait_reachable()
-    ctx = InstallContext(manifest=manifest, ssh=ssh)
+        # 2) Discover its IP.
+        ip = target.discover_ip(manifest, result.mac)
+        log.info("VM IP: %s", ip)
+        rec.set_vm(ip=ip)
 
-    # 4) Wait for K3s. A server exposes /readyz; an agent has no local API,
-    #    so we just wait for k3s.service to be active.
-    if mode == "agent":
-        _wait_for_k3s_agent(ssh)
-    else:
-        _wait_for_k3s_server(ssh)
+        # 3) SSH + InstallContext.
+        ssh = SSH(host=ip, user=ssh_user, key=ssh_key)
+        ssh.wait_reachable()
+        ctx = InstallContext(manifest=manifest, ssh=ssh)
 
-    # 5) Installers. Split by whether they need the cluster kubeconfig.
-    entries = manifest.installer_entries()
-    pre_kc = [e for e in entries
-              if not installers.get(e.name)().requires_kubeconfig()]
-    post_kc = [e for e in entries
-               if installers.get(e.name)().requires_kubeconfig()]
+        # 4) Wait for K3s. A server exposes /readyz; an agent has no local API,
+        #    so we just wait for k3s.service to be active.
+        if mode == "agent":
+            _wait_for_k3s_agent(ssh)
+        else:
+            _wait_for_k3s_server(ssh)
 
-    for entry in pre_kc:
-        log.info("Applying installer (pre-kubeconfig): %s", entry.name)
-        installers.get(entry.name)().apply(ctx, entry)
+        # 5) Installers. Split by whether they need the cluster kubeconfig.
+        entries = manifest.installer_entries()
+        pre_kc = [e for e in entries
+                  if not installers.get(e.name)().requires_kubeconfig()]
+        post_kc = [e for e in entries
+                   if installers.get(e.name)().requires_kubeconfig()]
 
-    if mode == "agent":
-        # Agents have no kubeconfig and nothing cluster-wide to install.
-        if post_kc:
-            log.warning("Ignoring kubeconfig-dependent installers on an agent "
-                        "node: %s", [e.name for e in post_kc])
+        for entry in pre_kc:
+            log.info("Applying installer (pre-kubeconfig): %s", entry.name)
+            rec.installer_start(entry.name, entry.version)
+            installers.get(entry.name)().apply(ctx, entry)
+            rec.installer_ok()
+
+        if mode == "agent":
+            # Agents have no kubeconfig and nothing cluster-wide to install.
+            if post_kc:
+                log.warning("Ignoring kubeconfig-dependent installers on an agent "
+                            "node: %s", [e.name for e in post_kc])
+                for entry in post_kc:
+                    rec.installer_start(entry.name, entry.version)
+                    rec.installer_skipped()
+            log.info("Done.")
+            log.info("VM:   %s @ %s  (joined cluster as agent)", manifest.hostname, ip)
+            return None
+
+        # Server: fetch kubeconfig and apply the rest.
+        ctx.kubeconfig = _fetch_kubeconfig(ssh, manifest.hostname, ip, kubeconfig_dir)
+        for entry in post_kc:
+            log.info("Applying installer: %s", entry.name)
+            rec.installer_start(entry.name, entry.version)
+            installers.get(entry.name)().apply(ctx, entry)
+            rec.installer_ok()
+
         log.info("Done.")
-        log.info("VM:   %s @ %s  (joined cluster as agent)", manifest.hostname, ip)
-        return None
-
-    # Server: fetch kubeconfig and apply the rest.
-    ctx.kubeconfig = _fetch_kubeconfig(ssh, manifest.hostname, ip, kubeconfig_dir)
-    for entry in post_kc:
-        log.info("Applying installer: %s", entry.name)
-        installers.get(entry.name)().apply(ctx, entry)
-
-    log.info("Done.")
-    log.info("VM:         %s @ %s", manifest.hostname, ip)
-    log.info("kubeconfig: %s", ctx.kubeconfig)
-    log.info("Try:        KUBECONFIG=%s kubectl get nodes", ctx.kubeconfig)
-    return ctx.kubeconfig
+        log.info("VM:         %s @ %s", manifest.hostname, ip)
+        log.info("kubeconfig: %s", ctx.kubeconfig)
+        log.info("Try:        KUBECONFIG=%s kubectl get nodes", ctx.kubeconfig)
+        return ctx.kubeconfig
 
 
 def destroy(manifest: Manifest) -> None:
@@ -108,7 +127,14 @@ def _resolve_secrets(manifest: Manifest) -> None:
     if not needs:
         return
     provider = secret_providers.get(manifest.secret_provider)()
-    log.info("Resolving secret references via '%s' provider", manifest.secret_provider)
+    # Bind the manifest's hostname so providers that support per-host
+    # overlays (today: `local`) prefer values scoped to this VM before
+    # falling back to the global namespace.
+    provider.bind_hostname(manifest.hostname)
+    log.info(
+        "Resolving secret references via '%s' provider (hostname=%s)",
+        manifest.secret_provider, manifest.hostname,
+    )
     for entry in manifest.install:
         entry.config = secretref.resolve(entry.config, provider)
 
@@ -137,6 +163,12 @@ def _wait_for_k3s_agent(ssh: SSH, attempts: int = 60, delay: int = 5) -> None:
             return
         time.sleep(delay)
     raise TimeoutError("k3s agent service did not become active within 5 minutes")
+
+
+def _extract_k3s_version(manifest: Manifest) -> str | None:
+    """Best-effort: the K3s install entry's `version:` (drives image tag)."""
+    k3s = manifest.k3s_install()
+    return k3s.version if k3s else None
 
 
 def _fetch_kubeconfig(ssh: SSH, hostname: str, ip: str,

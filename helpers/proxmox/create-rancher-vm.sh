@@ -136,8 +136,13 @@ run qm create "$VMID" \
     --agent enabled=1
 
 # 2) Import the qcow2; lands as an unused disk
+# NOTE: no `--format qcow2`. On LVM-thin / Ceph / iSCSI etc. the storage only
+# accepts raw; passing `--format qcow2` makes qm transfer the bytes, print
+# "successfully imported", then silently roll back the LV on finalize so
+# the next attach fails with "no such logical volume". Let qm pick the
+# storage's default format.
 echo ">>> Importing disk from $QCOW2 into $STORAGE (this can take a few minutes)"
-run qm importdisk "$VMID" "$QCOW2" "$STORAGE" --format qcow2
+run qm importdisk "$VMID" "$QCOW2" "$STORAGE"
 
 # 3) Attach the imported disk as scsi0 and set boot order
 #    The imported disk shows up as ${STORAGE}:vm-${VMID}-disk-1 (after efidisk0

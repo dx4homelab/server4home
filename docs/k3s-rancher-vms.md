@@ -188,6 +188,88 @@ The Justfile bootstraps `./.venv/` on first use (`pip install -e tools/`),
 then runs `server4home deploy <manifest>`. The kubeconfig lands at
 `./kubeconfigs/<hostname>.kubeconfig` for direct use.
 
+### 4.1  Deploying to Proxmox VE 9
+
+The `pve9` target provisions through the Proxmox REST API, with one SSH hop
+for `qm importdisk` (the API's own disk-import flow is too clunky for a
+qcow2 — even proxmoxer and Ansible's modules shell out for it).
+
+**One-time PVE setup (≈ 2 min):**
+
+1. **Datacenter → Permissions → API Tokens → Add.** User
+   `server4home@pve`, Token ID `deploy`, **Privilege Separation ON**
+   (the default — *leave it alone*). Copy the one-time-shown secret
+   immediately.
+2. **Datacenter → Permissions → Add → API Token Permission.** Path `/`,
+   API Token `server4home@pve!deploy`, Role `PVEVMAdmin`, Propagate ✓.
+3. **Same, second time.** Path `/storage`, API Token `server4home@pve!deploy`,
+   Role `PVEDatastoreUser`, Propagate ✓.
+
+The Privilege Separation rule: **ON ⇒ token uses its own ACL; OFF ⇒ token
+inherits the user's ACL**. The recipe above grants the *token's* ACL, so
+priv-sep must be ON. Symptom of the wrong combination: `GET /access/permissions`
+returns `{"data": {}}` and every mutating call comes back `403 Permission
+check failed`. Quick check from the workstation:
+
+```bash
+TOKEN=$(.venv/bin/python3 -c "from server4home.secrets.local import LocalSecretProvider; print(LocalSecretProvider().get('proxmox/api-token'))")
+curl -ks -H "Authorization: PVEAPIToken=$TOKEN" \
+    "https://${PVE_HOST:-pve9.local.homelabsolutions.net}:8006/api2/json/access/permissions" \
+    | python3 -m json.tool | head
+```
+
+Should show non-empty `/` and `/storage` blocks. If empty, flip priv-sep.
+4. **SSH key to `root@<pve>`.** `ssh-copy-id root@pve9.local.homelabsolutions.net`
+   (required only for the `qm importdisk` hop).
+
+**Secrets** in `secrets/secrets.yaml`:
+
+```yaml
+"proxmox/api-token":      "server4home@pve!deploy=<UUID>"
+"k3s/homelab/node-token": "K10..."   # from /var/lib/rancher/k3s/server/node-token on the existing CP
+```
+
+**Environment** (defaults shown; override per-VM only if you have to):
+
+```bash
+export PVE_HOST=pve9.local.homelabsolutions.net
+export PVE_NODE=pve9
+export PVE_STORAGE=local-lvm
+export PVE_BRIDGE=vmbr0
+```
+
+**Deploy** an additional control-plane node joining the existing libvirt
+cluster:
+
+```bash
+just deploy instances/k3s-rancher-on-ucore-pve-vm.yaml
+```
+
+**Verification:**
+
+```bash
+KC=./kubeconfigs/k3s-test-on-virt-manager.kubeconfig   # existing CP's kubeconfig
+kubectl --kubeconfig $KC get nodes -o wide
+# Expected: 2 nodes, both Ready, both 'control-plane,etcd'
+```
+
+**Why two SSH hops** to `root@pve` are unavoidable even with the API token:
+
+1. **`qm importdisk`** — the API's disk-import endpoint expects raw, pre-uploaded blobs and is genuinely awkward for qcow2. Even proxmoxer and Ansible shell out for this.
+2. **`qm set --args`** — Proxmox guards the QEMU `args` field so **only literal `root@pam` over the local CLI** can set it; API tokens (even with `Administrator` role) get `500: only root can set 'args' config`. We carry the SMBIOS OEM strings (which the K3s-join + static-IP + exact-hostname first-boot services read) via `args`, so we set it through SSH after creating the VM.
+
+These two hops are why the `pve9` target requires `ssh root@<pve>` key-auth from the workstation, on top of the API token.
+
+**Caveat — 2-node etcd quorum:** once the second CP joins, etcd needs 2-of-2
+votes for quorum. That's *less* robust than a single-node etcd — any one
+member failing halts the cluster. Fine for a one-time validation; add a
+third CP before you call it stable.
+
+**What the runner does step-by-step**: it's spelled out in
+[tools/README.md → Environment overrides](../tools/README.md#environment-overrides)
+and in the `pve9` plugin's module docstring
+([tools/server4home/targets/pve9.py](../tools/server4home/targets/pve9.py)).
+
 ---
 
 ## 5. Plugin architecture
@@ -196,7 +278,7 @@ Five extension points, all in [`tools/server4home/registry.py`](../tools/server4
 
 | Registry | Location | Built-ins (today) |
 | --- | --- | --- |
-| `targets` | `tools/server4home/targets/` | `local-virt-manager`, `pve9` (stub) |
+| `targets` | `tools/server4home/targets/` | `local-virt-manager`, `pve9` |
 | `mac_provisioners` | `tools/server4home/provisioners/mac.py` | `default`, `fixed`, `ifra` (stub) |
 | `ip_provisioners` | `tools/server4home/provisioners/ip.py` | `dhcp`, `static` |
 | `installers` | `tools/server4home/installers/` | `k3s`, `cert-manager`, `rancher-manager`, `kubernetes-secret`, `metallb` |
@@ -397,6 +479,47 @@ node rejoins its cluster after reboot with the same identity. If the new
 image regresses, `sudo bootc rollback` reverts to the previous deployment
 on the next boot.
 
+### Automatic upgrades + scheduled etcd snapshots — what's enabled by default
+
+The K3s image bakes in **two scheduled things** so a freshly-deployed VM
+keeps itself patched and recoverable without operator action:
+
+| Service | Schedule | What it does | Where the symlink lives |
+| --- | --- | --- | --- |
+| `bootc-fetch-apply-updates.timer` | `OnBootSec=1h`, `OnUnitInactiveSec=8h`, ±2h jitter | Runs `bootc upgrade --apply` against the registry image the VM was last switched to — pulls and reboots only if a new digest is available | `build/k3s/files/usr/lib/systemd/system/timers.target.wants/bootc-fetch-apply-updates.timer` (symlinks to the bootc RPM's unit) |
+| K3s `etcd-snapshot-schedule-cron` | every 6 hours (`0 */6 * * *`), retain 5 | Writes an embedded-etcd snapshot to `/var/lib/rancher/k3s/server/db/snapshots/` on the LVM data disk | `build/k3s/files/etc/rancher/k3s/config.yaml` |
+
+These pair on purpose: an etcd snapshot is taken every 6h, so any rebooting
+auto-upgrade has a recent restore point if the new image regresses. The
+snapshots live on the data disk (preserved across `bootc upgrade`), so a
+broken root deployment never takes the backups with it.
+
+**To disable on a specific VM** (e.g., for production HA control-plane
+nodes you'd rather roll manually):
+
+```bash
+sudo systemctl disable --now bootc-fetch-apply-updates.timer
+# k3s snapshots: drop /etc/rancher/k3s/config.yaml.d/99-disable-snapshots.yaml
+# with `etcd-snapshot-schedule-cron: ""`
+```
+
+**To send snapshots off-host (S3 / Minio)** add to
+[build/k3s/files/etc/rancher/k3s/config.yaml](../build/k3s/files/etc/rancher/k3s/config.yaml)
+or a local config.yaml.d drop-in:
+
+```yaml
+etcd-s3: true
+etcd-s3-endpoint: minio.lan.example.com:9000
+etcd-s3-bucket: k3s-etcd-snapshots
+etcd-s3-access-key: { secret: "minio/access-key" }
+etcd-s3-secret-key: { secret: "minio/secret-key" }
+```
+
+**HA caveat**: the bootc timer doesn't coordinate across nodes. If you
+eventually run 3-node HA control planes, stagger the timers (different
+`OnCalendar=` per node via a drop-in) or upgrade manually one node at a
+time to keep quorum during reboots.
+
 ### Making the GHCR packages pullable from VMs
 
 GHCR container packages start **private** even when the source repo is
@@ -503,5 +626,7 @@ plugin uses to apply manifest-supplied `args:`.
 | [tools/](../tools/) | Python deploy runner (`server4home` CLI) |
 | [tools/server4home/](../tools/server4home/) | Runner package source |
 | [tools/README.md](../tools/README.md) | Runner CLI quickstart + plugin authoring |
-| [helpers/proxmox/create-rancher-vm.sh](../helpers/proxmox/create-rancher-vm.sh) | Manual Proxmox provisioning (until `pve9` target lands) |
+| [tools/server4home/targets/pve9.py](../tools/server4home/targets/pve9.py) | Manifest-driven Proxmox VE 9 target (REST API + ssh hop for qm importdisk) |
+| [instances/k3s-rancher-on-ucore-pve-vm.yaml](../instances/k3s-rancher-on-ucore-pve-vm.yaml) | Example manifest for an additional CP node joining via Proxmox |
+| [helpers/proxmox/create-rancher-vm.sh](../helpers/proxmox/create-rancher-vm.sh) | Manual Proxmox provisioning (predates the `pve9` target; kept for ad-hoc use) |
 | [helpers/network/set-correct-bridge.sh](../helpers/network/set-correct-bridge.sh) | One-shot host bridge setup (br0) |

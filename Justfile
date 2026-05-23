@@ -193,6 +193,18 @@ validate manifest: _python-env
 list-plugins: _python-env
     PATH="$PWD/.venv/bin:$PATH" .venv/bin/server4home list-plugins
 
+# Re-render docs/deployment-history.md from deployments/*.json (the JSON
+# files are the source of truth; the markdown is a generated, committed
+# artifact so PR diffs and offline grep work).
+[group('Deploy')]
+history: _python-env
+    PATH="$PWD/.venv/bin:$PATH" .venv/bin/server4home history render
+
+# CI-style check: fails if docs/deployment-history.md is stale.
+[group('Deploy')]
+history-check: _python-env
+    PATH="$PWD/.venv/bin:$PATH" .venv/bin/server4home history check
+
 # Command: _rootful_load_image
 # Description: This script checks if the current user is root or running under sudo. If not, it attempts to resolve the image tag using podman inspect.
 #              If the image is found, it loads it into rootful podman. If the image is not found, it pulls it from the repository.

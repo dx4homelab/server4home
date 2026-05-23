@@ -115,9 +115,10 @@ install:
 ```
 
 At deploy time the runner resolves every `{ secret: <name> }` reference via a
-**secret provider** plugin (default: `local`). The `local` provider reads a
-flat `name: value` map from `secrets/secrets.yaml` — which is gitignored.
-Copy the committed template to start:
+**secret provider** plugin (default: `local`). The `local` provider reads
+`name: value` entries — and optional per-hostname overlays — from
+`secrets/secrets.yaml`, which is gitignored. Copy the committed template
+to start:
 
 ```bash
 cp secrets/secrets.example.yaml secrets/secrets.yaml
@@ -127,6 +128,40 @@ $EDITOR secrets/secrets.yaml      # fill in real values
 Override the store path with `$S4H_SECRETS_FILE`, or the provider with the
 manifest's top-level `secret_provider:` key. A future `ifra` provider will
 fetch from the homelab inventory API — the manifest stays identical.
+
+### Per-hostname overlays
+
+The runner binds the manifest's `hostname:` to the provider before
+resolution, so a YAML section named after a hostname can shadow a global
+secret on a per-VM basis:
+
+```yaml
+# secrets/secrets.yaml
+
+# Globals — shared across every VM
+"proxmox/api-token":      "PVEAPIToken=root@pam!deploy=..."
+"k3s/homelab/node-token": "K10abc...::server:def..."
+"rancher/admin-password": "default-bootstrap-pw"
+
+# Per-host overlays
+k3s-rancher-on-ucore-pve-vm:
+  "rancher/admin-password": "prod-bootstrap-pw"
+
+k3s-on-virt-manager:
+  "rancher/admin-password": "spare-bootstrap-pw"
+```
+
+Lookup order for `{ secret: "rancher/admin-password" }`:
+
+1. `data[<hostname>][<name>]` — YAML overlay
+2. `data[<name>]` — YAML global
+3. `secrets/<hostname>/<name>` on disk — filesystem overlay
+4. `secrets/<name>` on disk — filesystem global
+
+So shared things (the PVE token, the homelab CA, the wildcard cert) stay
+in one place at the global layer; only the values that genuinely differ
+per VM live in the overlays. This is fully backward-compatible: a flat
+`secrets.yaml` with no overlays keeps working unchanged.
 
 ### Pre-staging Kubernetes secrets (TLS, registry creds, …)
 
@@ -278,20 +313,29 @@ install:
 
 ## Environment overrides
 
-| Variable         | Used by                     | Default                   |
-| ---------------- | --------------------------- | ------------------------- |
-| `LIBVIRT_BRIDGE` | `local-virt-manager` target | `br0`                     |
-| `LIBVIRT_POOL`   | `local-virt-manager` target | `/var/lib/libvirt/images` |
-| `QCOW2_SRC`      | `local-virt-manager` target | `output/qcow2/disk.qcow2` |
-| `SSH_USER`       | runner                      | `developer`               |
-| `SSH_KEY`        | runner                      | `~/.ssh/id_ed25519`       |
+| Variable          | Used by                              | Default                           |
+| ----------------- | ------------------------------------ | --------------------------------- |
+| `LIBVIRT_BRIDGE`  | `local-virt-manager` target          | `br0`                             |
+| `LIBVIRT_POOL`    | `local-virt-manager` target          | `/var/lib/libvirt/images`         |
+| `QCOW2_SRC`       | both `local-virt-manager` + `pve9`   | `output/qcow2/disk.qcow2`         |
+| `SSH_USER`        | runner (SSH into the VM)             | `developer`                       |
+| `SSH_KEY`         | runner                               | `~/.ssh/id_ed25519`               |
+| `PVE_HOST`        | `pve9` target                        | `pve9.local.homelabsolutions.net` |
+| `PVE_PORT`        | `pve9` target                        | `8006`                            |
+| `PVE_NODE`        | `pve9` target (cluster node name)    | `pve9`                            |
+| `PVE_STORAGE`     | `pve9` target                        | `local-lvm`                       |
+| `PVE_BRIDGE`      | `pve9` target                        | `vmbr0`                           |
+| `PVE_SSH_USER`    | `pve9` target (for `qm importdisk`)  | `root`                            |
+| `PVE_VERIFY_TLS`  | `pve9` target                        | `0` (accept self-signed)          |
+| `PVE_API_TIMEOUT` | `pve9` target (seconds, per request) | `60`                              |
 
 ## Limitations (today)
 
 - `disks:` only honors a `/var/lib/rancher` entry with `type: lvm`. Other
   paths are accepted but skipped with a warning.
 - Only `network[0]` is wired (single NIC).
-- `target: pve9` raises NotImplementedError — Proxmox provisioning still goes
-  through `helpers/proxmox/create-rancher-vm.sh` for now.
+- `pve9` target has **no data-disk identity check** yet (unlike
+  `local-virt-manager`). Identity-mismatch on a preserved data disk in
+  Proxmox surfaces as a K3s restart loop after boot.
 - `mac.provisioner: ifra` raises NotImplementedError — lands with the IFRA
   inventory service.

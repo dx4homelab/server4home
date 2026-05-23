@@ -1,13 +1,28 @@
 """Local secret provider.
 
-Reads a flat YAML map of `name: value` from a gitignored file on the
-workstation. Default location: `secrets/secrets.yaml` relative to the
-current directory; override with $S4H_SECRETS_FILE.
+Reads a YAML map of `name: value` (and optional per-hostname overlays)
+from a gitignored file on the workstation. Default location:
+`secrets/secrets.yaml` relative to the current directory; override with
+$S4H_SECRETS_FILE.
 
 Example secrets/secrets.yaml:
 
-    "k3s/homelab/agent-token": "K10abc...::server:def..."
-    "rancher/admin-password":  "s3cr3t"
+    # ---- Global / shared across all VMs ----
+    "proxmox/api-token":       "PVEAPIToken=root@pam!deploy=..."
+    "k3s/homelab/node-token":  "K10abc...::server:def..."
+
+    # ---- Per-hostname overlays (narrowed by manifest.hostname) ----
+    k3s-rancher-on-ucore-pve-vm:
+      "rancher/admin-password": "<unique-to-prod>"
+
+    k3s-on-virt-manager:
+      "rancher/admin-password": "<unique-to-spare>"
+
+Lookup order when the runner has bound a hostname:
+  1. data[<hostname>][<name>]          — YAML per-host overlay
+  2. data[<name>]                      — YAML global
+  3. secrets/<hostname>/<name> on disk — filesystem per-host overlay
+  4. secrets/<name>          on disk   — filesystem global (PEMs etc.)
 
 This file must NEVER be committed — see .gitignore. The committed
 `secrets/secrets.example.yaml` documents the format.
@@ -31,8 +46,15 @@ DEFAULT_PATH = "secrets/secrets.yaml"
 class LocalSecretProvider(SecretProvider):
     def __init__(self) -> None:
         self.path = Path(os.environ.get("S4H_SECRETS_FILE", DEFAULT_PATH))
-        self._store: dict[str, str] = {}
+        # Globals: top-level scalar entries.
+        self._globals: dict[str, str] = {}
+        # Per-host overlays: top-level entries whose value is a mapping.
+        self._namespaces: dict[str, dict[str, str]] = {}
         self._loaded = False
+        self._hostname: str | None = None
+
+    def bind_hostname(self, hostname: str | None) -> None:
+        self._hostname = hostname
 
     def _load(self) -> None:
         if self._loaded:
@@ -49,35 +71,59 @@ class LocalSecretProvider(SecretProvider):
             data = yaml.safe_load(fh) or {}
         if not isinstance(data, dict):
             raise ValueError(f"{self.path}: expected a top-level mapping")
-        # Coerce everything to str; YAML may parse numeric-looking tokens.
-        self._store = {str(k): str(v) for k, v in data.items()}
-        log.info("Loaded %d secret(s) from %s", len(self._store), self.path)
+        # Split: dict-valued top-level entries are per-host overlays;
+        # everything else is a global scalar. This is unambiguous given the
+        # convention that secret names are paths (string-valued at the leaf).
+        for key, value in data.items():
+            if isinstance(value, dict):
+                self._namespaces[str(key)] = {
+                    str(k): str(v) for k, v in value.items()
+                }
+            else:
+                self._globals[str(key)] = str(value)
+        log.info(
+            "Loaded %d global secret(s) and %d per-host overlay(s) from %s",
+            len(self._globals), len(self._namespaces), self.path,
+        )
 
     def get(self, name: str) -> str:
         self._load()
-        # 1) Look up in secrets.yaml first (short strings: tokens, passwords).
-        if name in self._store:
-            return self._store[name]
-        # 2) Fall back to a file under the secret store's root. The name is
-        #    treated as a path relative to that root, so a manifest reference
-        #    like {secret: "tls/rancher.crt"} reads secrets/tls/rancher.crt
-        #    on disk. Path traversal outside the root is rejected.
+        host = self._hostname
+
+        # 1) YAML per-host overlay
+        if host and host in self._namespaces and name in self._namespaces[host]:
+            return self._namespaces[host][name]
+        # 2) YAML global
+        if name in self._globals:
+            return self._globals[name]
+
+        # 3-4) Filesystem fallback. The name is treated as a path relative to
+        #      the secret store root. Per-host overlay first, then global.
+        #      Path traversal outside the root is rejected.
         root = self.path.parent.resolve()
-        candidate = (root / name).resolve()
-        try:
-            candidate.relative_to(root)
-        except ValueError:
-            raise SecretNotFound(
-                f"secret name '{name}' escapes the secret store root ({root})"
-            ) from None
-        if candidate.is_file():
+        candidates: list[Path] = []
+        if host:
+            candidates.append((root / host / name).resolve())
+        candidates.append((root / name).resolve())
+
+        for candidate in candidates:
             try:
-                return candidate.read_text(encoding="utf-8")
-            except OSError as e:
+                candidate.relative_to(root)
+            except ValueError:
                 raise SecretNotFound(
-                    f"could not read secret file {candidate}: {e}"
-                ) from e
+                    f"secret name '{name}' escapes the secret store root ({root})"
+                ) from None
+            if candidate.is_file():
+                try:
+                    return candidate.read_text(encoding="utf-8")
+                except OSError as e:
+                    raise SecretNotFound(
+                        f"could not read secret file {candidate}: {e}"
+                    ) from e
+
+        looked = [str(self.path)] + [str(c) for c in candidates]
         raise SecretNotFound(
-            f"secret '{name}' not found (looked in {self.path} and {candidate}). "
-            f"Add it to the YAML store or drop a file at the path shown."
+            f"secret '{name}' not found (host={host!r}); looked in: "
+            + ", ".join(looked)
+            + ". Add it to the YAML store (global or per-host) or drop a file at one of the paths shown."
         )

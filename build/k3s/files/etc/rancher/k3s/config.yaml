@@ -9,3 +9,16 @@
 # iso/disk.toml's [[customizations.user]].
 write-kubeconfig-mode: "0640"
 write-kubeconfig-group: "wheel"
+
+# Scheduled etcd snapshots. Pairs with the bootc auto-upgrade timer — every
+# 6h K3s writes a snapshot, so a problematic upgrade always has a recent
+# restore point. Only takes effect on embedded-etcd clusters (the default;
+# `disable=cluster-init=true` for sqlite opts out). Ignored on agent nodes.
+#
+# Snapshots land at /var/lib/rancher/k3s/server/db/snapshots/  — on the
+# LVM data disk, so they survive bootc upgrades. K3s rotates per
+# etcd-snapshot-retention.
+#
+# For off-host DR, add etcd-s3 settings here (or in a config.yaml.d drop-in).
+etcd-snapshot-schedule-cron: "0 */6 * * *"
+etcd-snapshot-retention: 5

@@ -6,7 +6,7 @@ import sys
 
 import click
 
-from . import runner
+from . import history, runner
 from .manifest import Manifest
 from .registry import (
     installers,
@@ -66,6 +66,44 @@ def validate_cmd(manifest_path: str) -> None:
     """Parse + validate a manifest. Prints the resolved model and exits 0 on success."""
     manifest = Manifest.load(manifest_path)
     click.echo(manifest.model_dump_json(indent=2))
+
+
+@cli.group("history")
+def history_group() -> None:
+    """Inspect or re-render the deployment-history ledger."""
+
+
+@history_group.command("render")
+@click.option("--deploy-dir", default="deployments", show_default=True,
+              type=click.Path(file_okay=False),
+              help="Directory containing per-event JSON files.")
+@click.option("--out", "out_path", default="docs/deployment-history.md",
+              show_default=True, type=click.Path(dir_okay=False),
+              help="Markdown file to write.")
+def history_render_cmd(deploy_dir: str, out_path: str) -> None:
+    """Regenerate the markdown history from the JSON ledger."""
+    history.render(deploy_dir=deploy_dir, out_path=out_path)
+
+
+@history_group.command("check")
+@click.option("--deploy-dir", default="deployments", show_default=True,
+              type=click.Path(file_okay=False))
+@click.option("--out", "out_path", default="docs/deployment-history.md",
+              show_default=True, type=click.Path(dir_okay=False))
+def history_check_cmd(deploy_dir: str, out_path: str) -> None:
+    """Exit non-zero if the rendered markdown is stale w.r.t. the JSON ledger.
+
+    Use in CI: a PR that adds a deployments/*.json file must also include
+    a re-rendered docs/deployment-history.md.
+    """
+    if not history.check(deploy_dir=deploy_dir, out_path=out_path):
+        click.echo(
+            f"{out_path} is out of sync with {deploy_dir}/*.json — "
+            "run `just history` and commit the result.",
+            err=True,
+        )
+        sys.exit(1)
+    click.echo(f"{out_path} is up to date.")
 
 
 @cli.command("list-plugins")

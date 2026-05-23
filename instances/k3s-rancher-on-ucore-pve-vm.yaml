@@ -1,0 +1,86 @@
+# instances/k3s-rancher-on-ucore-pve-vm.yaml
+#
+# Primary K3s + Rancher cluster, single-node embedded etcd, on Proxmox VE 9.
+# This is the permanent operational deployment. No `mode: server` join
+# config — this manifest creates a fresh cluster. The libvirt VM (if present)
+# is an OS-only cold spare and is NOT part of this cluster.
+#
+# Prerequisites:
+#   1. secrets/secrets.yaml has:
+#        proxmox/api-token              — PVE token (Administrator)
+#        rancher/admin-password         — generated, gitignored
+#   2. secrets/private/homelab-certs/   — wildcard cert + key + CA (gitignored)
+#   3. PVE env vars (defaults match a single-node pve9 homelab):
+#        PVE_HOST / PVE_NODE / PVE_STORAGE / PVE_BRIDGE
+#   4. DNS for `rancher0ucore.local.homelabsolutions.net` resolves to the
+#      VIP 192.168.130.50 (MetalLB will announce it from this node's bridge).
+
+base: k3s-base
+hostname: k3s-rancher-on-ucore-pve-vm
+target: pve9
+
+resources:
+  memory: 16384
+  vcpus: 4
+
+disks:
+  - path: /var/lib/rancher
+    size: 100G
+    type: lvm
+
+network:
+  - name: default
+    type: bridge
+    mac:
+      provisioner: default
+    ip:
+      provisioner: static
+      static: 192.168.130.20/16
+      gateway: 192.168.1.1
+      dns: 192.168.1.1
+
+install:
+  - name: k3s
+    version: v1.35.4+k3s1
+    args:
+      # Traefik stays enabled (default). servicelb is replaced by MetalLB.
+      - --disable=servicelb
+
+  # L4 LoadBalancer for the cluster. The VIP becomes Traefik's external IP;
+  # DNS for rancher0ucore.local.homelabsolutions.net points here.
+  - name: metallb
+    version: 0.15.3                     # 0.16.0 has an upstream chart bug; bump when fixed
+    config:
+      vip: 192.168.130.50
+
+  # Pre-stage the wildcard cert + key as the secret Rancher's ingress reads
+  - name: kubernetes-secret
+    config:
+      name: tls-rancher-ingress
+      namespace: cattle-system
+      type: tls
+      data:
+        tls.crt: { secret: "private/homelab-certs/wc.local.homelabsolutions.net.pem" }
+        tls.key: { secret: "private/homelab-certs/wc.local.homelabsolutions.net.cert.key.pem" }
+
+  # Pre-stage the CA cert as the secret Rancher reads for privateCA trust
+  - name: kubernetes-secret
+    config:
+      name: tls-ca
+      namespace: cattle-system
+      type: opaque
+      data:
+        cacerts.pem: { secret: "private/homelab-certs/ca.homelabsolutions.net.crt" }
+
+  - name: rancher-manager
+    version: v2.14.1
+    config:
+      hostname: rancher0ucore.local.homelabsolutions.net
+      bootstrapPassword: { secret: "rancher/admin-password" }
+      replicas: 1
+      ingress:
+        enabled: true
+        tls:
+          source: secret                # use tls-rancher-ingress (pre-staged above)
+      privateCA: true                   # use tls-ca (pre-staged above)
+      cert-manager-auto: false          # we're BYO cert; skip cert-manager dep
