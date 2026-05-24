@@ -178,6 +178,14 @@ deploy manifest: _python-env
 deploy-fresh manifest: _python-env
     PATH="$PWD/.venv/bin:$PATH" .venv/bin/server4home deploy --wipe-data {{ manifest }}
 
+# Reconcile installers (helm charts) against an EXISTING cluster.
+# Use after editing a manifest's `version:` to bump rancher-manager,
+# metallb, cert-manager, etc. — no VM (re)create. The k3s installer is
+# skipped automatically (it lives in the image, not in helm).
+[group('Deploy')]
+apply manifest: _python-env
+    PATH="$PWD/.venv/bin:$PATH" .venv/bin/server4home apply {{ manifest }}
+
 # Tear down a VM by manifest. Prompts for confirmation.
 [group('Deploy')]
 destroy manifest: _python-env

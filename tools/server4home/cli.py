@@ -51,6 +51,38 @@ def deploy_cmd(manifest_path: str, ssh_user: str | None,
     )
 
 
+@cli.command("apply")
+@click.argument("manifest_path", type=click.Path(exists=True, dir_okay=False))
+@click.option("--kubeconfig", default=None, type=click.Path(dir_okay=False),
+              help="Path to the kubeconfig (default: kubeconfigs/<hostname>.kubeconfig).")
+@click.option("--kubeconfig-dir", default="./kubeconfigs",
+              show_default=True, type=click.Path(file_okay=False),
+              help="Directory holding fetched kubeconfigs (only used if --kubeconfig is not set).")
+@click.option("--only", "only_csv", default=None,
+              help="Comma-separated installer names to reconcile (skip everything else).")
+@click.option("--skip", "skip_csv", default=None,
+              help="Comma-separated installer names to skip.")
+def apply_cmd(manifest_path: str, kubeconfig: str | None,
+              kubeconfig_dir: str, only_csv: str | None,
+              skip_csv: str | None) -> None:
+    """Reconcile installers against an EXISTING cluster.
+
+    Use this to bump helm-chart versions after editing a manifest, without
+    re-creating the VM. Installers that require a fresh node (today: k3s)
+    are skipped automatically.
+    """
+    manifest = Manifest.load(manifest_path)
+    only = [s.strip() for s in only_csv.split(",") if s.strip()] if only_csv else None
+    skip = [s.strip() for s in skip_csv.split(",") if s.strip()] if skip_csv else None
+    runner.apply(
+        manifest,
+        kubeconfig=kubeconfig,
+        kubeconfig_dir=kubeconfig_dir,
+        only=only,
+        skip=skip,
+    )
+
+
 @cli.command("destroy")
 @click.argument("manifest_path", type=click.Path(exists=True, dir_okay=False))
 @click.confirmation_option(prompt="Destroy the VM described by this manifest?")

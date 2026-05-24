@@ -37,3 +37,15 @@ class Installer(ABC):
     def requires_kubeconfig(self) -> bool:
         """Override to True for installers that need cluster API access."""
         return True
+
+    def requires_fresh_node(self) -> bool:
+        """Override to True for installers that must run on a freshly-created
+        VM (not against an already-up cluster).
+
+        `server4home apply <manifest>` skips installers that return True
+        here — running them on a live node would either be a no-op or
+        actively wrong. The k3s installer is the canonical case: it lives
+        in the image, not in helm, and rewriting first-boot config on a
+        running node is not what reconciliation should do.
+        """
+        return False

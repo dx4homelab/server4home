@@ -118,6 +118,81 @@ def destroy(manifest: Manifest) -> None:
     target.destroy(manifest)
 
 
+def apply(manifest: Manifest, *,
+          kubeconfig: str | Path | None = None,
+          kubeconfig_dir: str | Path = "./kubeconfigs",
+          only: list[str] | None = None,
+          skip: list[str] | None = None) -> Path:
+    """Reconcile installers against an EXISTING cluster.
+
+    Unlike ``deploy``, this does NOT call ``target.create()`` or touch the VM
+    via SSH — it's a cluster-side operation that relies on the kubeconfig
+    fetched by the original deploy. Use it to bump helm-chart versions
+    (rancher-manager, metallb, cert-manager) after editing a manifest:
+
+        $ $EDITOR instances/foo.yaml      # version: v2.15.0
+        $ server4home apply instances/foo.yaml
+
+    Installers that report ``requires_fresh_node() == True`` are skipped
+    (today: just k3s, since the K3s binary lives in the bootc image, not
+    in a helm chart).
+
+    Returns the kubeconfig path used.
+    """
+    # Resolve secret references in install entries (same as deploy).
+    _resolve_secrets(manifest)
+
+    # Find the kubeconfig — explicit override, then convention, then error.
+    kc = Path(kubeconfig) if kubeconfig else Path(kubeconfig_dir) / f"{manifest.hostname}.kubeconfig"
+    if not kc.is_file():
+        raise FileNotFoundError(
+            f"kubeconfig not found at {kc}. `apply` reconciles installers "
+            f"against an existing cluster — run `server4home deploy "
+            f"{manifest.source_path}` first, or pass --kubeconfig <path> "
+            f"if the kubeconfig lives elsewhere."
+        )
+    log.info("Using kubeconfig: %s", kc)
+
+    # SSH is not used by apply today (every helm installer is cluster-side).
+    # Construct an InstallContext with the kubeconfig but no SSH — installers
+    # whose apply() touches ctx.ssh will fail loudly. That's the right
+    # signal (those installers don't belong in `apply`).
+    ctx = InstallContext(manifest=manifest, ssh=None, kubeconfig=kc)  # type: ignore[arg-type]
+
+    only_set = set(only) if only else None
+    skip_set = set(skip) if skip else set()
+
+    with history.record(manifest, kind="apply") as rec:
+        rec.set_image(
+            ref=f"localhost/{manifest.image_ref()}:stable",
+            k3s_version=_extract_k3s_version(manifest),
+        )
+        for entry in manifest.installer_entries():
+            inst = installers.get(entry.name)()
+            if only_set is not None and entry.name not in only_set:
+                log.info("Skipping installer (not in --only): %s", entry.name)
+                rec.installer_start(entry.name, entry.version)
+                rec.installer_skipped()
+                continue
+            if entry.name in skip_set:
+                log.info("Skipping installer (in --skip): %s", entry.name)
+                rec.installer_start(entry.name, entry.version)
+                rec.installer_skipped()
+                continue
+            if inst.requires_fresh_node():
+                log.info("Skipping installer (requires fresh node): %s", entry.name)
+                rec.installer_start(entry.name, entry.version)
+                rec.installer_skipped()
+                continue
+            log.info("Reconciling installer: %s", entry.name)
+            rec.installer_start(entry.name, entry.version)
+            inst.apply(ctx, entry)
+            rec.installer_ok()
+
+    log.info("Done. kubeconfig=%s", kc)
+    return kc
+
+
 # --------------------------------------------------------------------------- #
 # internals
 # --------------------------------------------------------------------------- #

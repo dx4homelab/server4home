@@ -1,7 +1,10 @@
-# Add `server4home apply <manifest>` — installer-only path against an existing VM
+# `server4home apply <manifest>` — installer-only path against an existing VM
 
-**Status:** must-have backlog item. Land before the next Rancher minor bump
-so that upgrades don't need hand-typed `helm upgrade` invocations.
+**Status (2026-05-24): landed.** This document is kept as the design record;
+the implementation matches it. See [tools/server4home/cli.py](../tools/server4home/cli.py)
+(the `apply_cmd` Click command), [tools/server4home/runner.py](../tools/server4home/runner.py)
+(the `apply()` function), and [tools/server4home/installers/base.py](../tools/server4home/installers/base.py)
+(the `requires_fresh_node()` predicate that lets `k3s` opt out).
 
 The runner today is **create-only**: [`deploy_cmd`](../tools/server4home/cli.py)
 always calls `target.create()`, then runs every installer. There's no way to

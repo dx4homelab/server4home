@@ -24,6 +24,13 @@ class K3sInstaller(Installer):
     def requires_kubeconfig(self) -> bool:
         return False
 
+    def requires_fresh_node(self) -> bool:
+        # K3s lives in the bootc image + a first-boot config writer. Running
+        # this installer on an already-up cluster is either a no-op or
+        # actively wrong (would rewrite /etc/server4home/k3s.conf on a node
+        # whose K3s is already running). `apply` skips us.
+        return True
+
     def apply(self, ctx: InstallContext, entry: InstallSpec) -> None:
         # Agent nodes: join config (mode/server/token) was delivered via
         # SMBIOS and consumed by k3s-config.sh before first boot. The `args:`

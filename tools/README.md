@@ -22,6 +22,7 @@ If you prefer to drive the CLI directly:
 server4home --help
 server4home validate instances/k3s-on-virt-manager.yaml
 server4home deploy   instances/k3s-on-virt-manager.yaml
+server4home apply    instances/k3s-on-virt-manager.yaml   # reconcile installers; no VM touch
 server4home destroy  instances/k3s-on-virt-manager.yaml
 server4home list-plugins
 ```
@@ -79,6 +80,22 @@ install:
       replicas: 1
       bootstrapPassword: admin
 ```
+
+### `deploy` vs `apply` — when to use which
+
+| Goal | Use |
+| --- | --- |
+| First time creating the VM | `just deploy <manifest>` |
+| Bump a helm-chart `version:` (rancher-manager, metallb, cert-manager) | `just apply <manifest>` |
+| Add/remove an installer entry in the manifest | `just apply <manifest>` |
+| Resize the VM (memory, vcpus) or change the data-disk size | `just deploy-fresh <manifest>` |
+| Wipe and rebuild from scratch | `just deploy-fresh <manifest>` |
+
+`apply` reconciles installers against the existing cluster via the
+fetched kubeconfig — no VM touch, no SSH. Installers that report
+`requires_fresh_node()` (today: just `k3s`) are skipped automatically.
+Use `--only rancher-manager` / `--skip k3s,metallb` for fine-grained
+runs. Events go into the deployment-history ledger as `kind: "apply"`.
 
 ### Pinning a Proxmox VMID
 
