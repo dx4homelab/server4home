@@ -134,6 +134,12 @@ class LocalVirtManager(Target):
         if manifest.k3s_datastore() == "sqlite":
             oem.append("server4home-k3s-datastore=sqlite")
 
+        # First-boot bootc-switch target (consumed by bootc-switch.sh).
+        # When set, the VM swaps from the qcow2-baked `localhost/...` ref
+        # to the GHCR-published image and reboots before k3s.service starts.
+        if manifest.upgrade2image:
+            oem.append(f"server4home-image-ref={manifest.upgrade2image}")
+
         sysinfo_parts = [
             "smbios",
             "system.manufacturer=server4home",

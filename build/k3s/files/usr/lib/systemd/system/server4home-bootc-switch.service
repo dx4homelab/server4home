@@ -1,0 +1,21 @@
+[Unit]
+Description=server4home: switch booted image to the manifest's upgrade2image ref on first boot
+Documentation=https://github.com/dx4homelab/server4home
+# Need the network up to fetch the GHCR image. Run before k3s.service
+# so the reboot triggered by `bootc upgrade --apply` happens before any
+# cluster state comes up.
+Wants=network-online.target
+After=network-online.target
+Before=k3s.service setup-rancher-data.service
+ConditionPathExists=/usr/libexec/server4home/bootc-switch.sh
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/libexec/server4home/bootc-switch.sh
+# The script is fail-soft. We accept any exit so a registry blip or
+# offline boot never bricks the VM at first start.
+SuccessExitStatus=0 1 2 3 4 5 6 7
+
+[Install]
+WantedBy=multi-user.target

@@ -606,6 +606,12 @@ class Pve9(Target):
         if manifest.k3s_datastore() == "sqlite":
             oem.append("server4home-k3s-datastore=sqlite")
 
+        # First-boot bootc-switch target (consumed by bootc-switch.sh).
+        # When set, the VM swaps from the qcow2-baked `localhost/...` ref
+        # to the GHCR-published image and reboots before k3s.service starts.
+        if manifest.upgrade2image:
+            oem.append(f"server4home-image-ref={manifest.upgrade2image}")
+
         # Encode as: `-smbios type=11,value=A,value=B,value=C`
         values = ",".join(f"value={s}" for s in oem)
         return f"-smbios type=11,{values}"

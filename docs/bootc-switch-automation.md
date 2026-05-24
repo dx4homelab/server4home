@@ -1,7 +1,16 @@
 # Automate the `localhost/` → `ghcr.io/...` bootc switch on first boot
 
-**Status:** backlog item. Land before the next image release so new VMs
-auto-enroll into the upgrade pipeline.
+**Status (2026-05-24): landed.** This document is kept as the design record;
+the implementation matches it. The pieces:
+
+- [build/k3s/files/usr/libexec/server4home/bootc-switch.sh](../build/k3s/files/usr/libexec/server4home/bootc-switch.sh) — the first-boot worker
+- [build/k3s/files/usr/lib/systemd/system/server4home-bootc-switch.service](../build/k3s/files/usr/lib/systemd/system/server4home-bootc-switch.service) — oneshot, before k3s.service
+- `server4home-image-ref=<ref>` injected as a SMBIOS OEM string by both the [pve9](../tools/server4home/targets/pve9.py) and [local-virt-manager](../tools/server4home/targets/local_virt_manager.py) targets when `manifest.upgrade2image` is set
+
+**Will take effect on:** the next image build. Today's already-running VMs
+were switched manually via the documented `sudo bootc switch ... && sudo
+bootc upgrade --apply` one-liner; that step now happens automatically on
+fresh VMs after a rebuild.
 
 A freshly-deployed VM boots the local qcow2 image and reports its
 container ref as `localhost/server4home-k3s:stable`. The baked-in
