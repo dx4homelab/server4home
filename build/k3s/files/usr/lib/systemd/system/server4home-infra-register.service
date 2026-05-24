@@ -1,14 +1,14 @@
 [Unit]
-Description=server4home: register MAC + hostname with IFRA homelab inventory
+Description=server4home: register MAC + hostname with the homelab INFRA inventory service
 Documentation=https://github.com/dx4homelab/server4home
 Wants=network-online.target server4home-hostname.service
 After=network-online.target server4home-hostname.service
-ConditionPathExists=/usr/libexec/server4home/ifra-register.sh
+ConditionPathExists=/usr/libexec/server4home/infra-register.sh
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/usr/libexec/server4home/ifra-register.sh
+ExecStart=/usr/libexec/server4home/infra-register.sh
 # Best-effort: never fail the boot if the API is unreachable.
 SuccessExitStatus=0 1 2 3 4 5 6 7
 

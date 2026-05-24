@@ -22,7 +22,7 @@ flowchart LR
 
 - **Base layer** — ucore-hci (Fedora CoreOS 43) + your customizations.
 - **K3s layer** — base + `/usr/bin/k3s` + `/usr/bin/helm` + first-boot services:
-  `set-hostname`, `setup-rancher-data` (LVM), `network-static`, `ifra-register`.
+  `set-hostname`, `setup-rancher-data` (LVM), `network-static`, `infra-register`.
 - **BIB** converts the OCI image into a bootable qcow2 (xfs root).
 - **Runner** reads a manifest, calls into target/provisioner/installer plugins,
   deploys the VM, applies helm charts over the resulting cluster.
@@ -94,7 +94,7 @@ network:
   - name: default
     type: bridge
     mac:
-      provisioner: default          # default | fixed | ifra
+      provisioner: default          # default | fixed | infra
     ip:
       provisioner: dhcp             # dhcp | static
       # static: 192.168.120.50/16
@@ -164,7 +164,7 @@ sequenceDiagram
     CLI->>Runner: Manifest.load(yaml)
     Runner->>Target: create(manifest)
     Target->>VM: virt-install --sysinfo (hostname, oemStrings)
-    VM->>VM: first-boot services<br/>(hostname, LVM, static-IP, ifra)
+    VM->>VM: first-boot services<br/>(hostname, LVM, static-IP, infra)
     VM->>K3s: start k3s server
     Runner->>VM: discover IP (ARP / mDNS)
     Runner->>VM: SSH wait → /readyz green
@@ -279,7 +279,7 @@ Five extension points, all in [`tools/server4home/registry.py`](../tools/server4
 | Registry | Location | Built-ins (today) |
 | --- | --- | --- |
 | `targets` | `tools/server4home/targets/` | `local-virt-manager`, `pve9` |
-| `mac_provisioners` | `tools/server4home/provisioners/mac.py` | `default`, `fixed`, `ifra` (stub) |
+| `mac_provisioners` | `tools/server4home/provisioners/mac.py` | `default`, `fixed`, `infra` (stub) |
 | `ip_provisioners` | `tools/server4home/provisioners/ip.py` | `dhcp`, `static` |
 | `installers` | `tools/server4home/installers/` | `k3s`, `cert-manager`, `rancher-manager`, `kubernetes-secret`, `metallb` |
 | `secret_providers` | `tools/server4home/secrets/` | `local` |
@@ -306,8 +306,8 @@ install:
 At deploy time the runner resolves every `{ secret: <name> }` through a
 secret-provider plugin. The `local` provider reads `secrets/secrets.yaml`
 (gitignored — copy [`secrets/secrets.example.yaml`](../secrets/secrets.example.yaml)).
-A future `ifra` provider will fetch from the homelab inventory API with **no
-manifest change** — same reference, different backend.
+A future `infra` provider will fetch from the homelab Infrastructure (INFRA)
+service — same reference, different backend, **no manifest change**.
 
 For a K3s join token specifically: the runner resolves it, then the
 `local-virt-manager` target injects mode/server/token as SMBIOS OEM strings.
@@ -331,7 +331,7 @@ sequenceDiagram
     participant netstatic as server4home-network-static
     participant hostname as server4home-hostname
     participant data as setup-rancher-data
-    participant ifra as server4home-ifra-register
+    participant infra as server4home-infra-register
     participant k3s as k3s.service
 
     systemd->>netstatic: Before=NetworkManager.service
@@ -339,7 +339,7 @@ sequenceDiagram
     systemd->>hostname: read SMBIOS; set exact hostname
     systemd->>data: claim unformatted disk → LVM → mount /var/lib/rancher
     par
-        systemd->>ifra: POST mac+hostname to inventory (best-effort)
+        systemd->>infra: POST mac+hostname to inventory (best-effort)
     and
         systemd->>k3s: After=hostname.service, setup-rancher-data.service
         k3s->>k3s: k3s server (reads /etc/rancher/k3s/config.yaml + .d)
@@ -614,9 +614,9 @@ plugin uses to apply manifest-supplied `args:`.
 | [build/k3s/files/usr/libexec/server4home/set-hostname.sh](../build/k3s/files/usr/libexec/server4home/set-hostname.sh) | First-boot hostname (exact mode + prefix-suffix fallback) |
 | [build/k3s/files/usr/libexec/server4home/network-static.sh](../build/k3s/files/usr/libexec/server4home/network-static.sh) | First-boot static-IP NM keyfile writer |
 | [build/k3s/files/usr/libexec/server4home/k3s-config.sh](../build/k3s/files/usr/libexec/server4home/k3s-config.sh) | First-boot writer of /etc/server4home/k3s.conf from SMBIOS (join config) |
-| [build/k3s/files/usr/libexec/server4home/ifra-register.sh](../build/k3s/files/usr/libexec/server4home/ifra-register.sh) | First-boot inventory registration |
+| [build/k3s/files/usr/libexec/server4home/infra-register.sh](../build/k3s/files/usr/libexec/server4home/infra-register.sh) | First-boot inventory registration (homelab INFRA service) |
 | [secrets/secrets.example.yaml](../secrets/secrets.example.yaml) | Template for the gitignored local secret store |
-| [tools/server4home/secrets/](../tools/server4home/secrets/) | Secret-provider plugins (`local`; `ifra` later) |
+| [tools/server4home/secrets/](../tools/server4home/secrets/) | Secret-provider plugins (`local`; `infra` later) |
 | [build/k3s/files/etc/rancher/k3s/config.yaml](../build/k3s/files/etc/rancher/k3s/config.yaml) | Baked K3s config (kubeconfig perms, etc.) |
 | [build/k3s/files/etc/server4home/k3s.conf.example](../build/k3s/files/etc/server4home/k3s.conf.example) | K3s runtime mode config template |
 | [iso/disk.toml](../iso/disk.toml) | BIB qcow2/raw partitioning + baked user |

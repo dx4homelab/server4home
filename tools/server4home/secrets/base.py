@@ -1,9 +1,9 @@
 """Secret provider interface.
 
 A SecretProvider maps an opaque secret name to its value. The `local`
-provider reads from a gitignored file on the workstation; a future `ifra`
-provider will fetch from the homelab inventory API — same interface, so
-manifests never change.
+provider reads from a gitignored file on the workstation; a future `infra`
+provider will fetch from the homelab Infrastructure (INFRA) API — same
+interface, so manifests never change.
 """
 
 from __future__ import annotations

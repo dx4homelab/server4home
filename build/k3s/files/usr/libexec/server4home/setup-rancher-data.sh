@@ -96,6 +96,11 @@ if ! grep -q "$FSTAB_MARKER" /etc/fstab 2>/dev/null; then
         echo "UUID=$uuid  $MOUNT_POINT  xfs  defaults,nofail,x-systemd.device-timeout=30  0 0"
     } >> /etc/fstab
     log "Added fstab entry for $MOUNT_POINT (UUID=$uuid)."
+    # Tell systemd we changed /etc/fstab so its fstab-generator re-runs and
+    # creates the matching var-lib-rancher.mount unit. Without this, every
+    # subsequent `mount` / `bootc status` prints the "fstab modified, systemd
+    # still uses the old version" hint until the next reboot.
+    systemctl daemon-reload || log "WARN: systemctl daemon-reload failed (non-fatal)."
 fi
 
 log "Done. $MOUNT_POINT is on /dev/$VG_NAME/$LV_NAME."

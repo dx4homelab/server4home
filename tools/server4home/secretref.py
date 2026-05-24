@@ -9,7 +9,8 @@ and replaces every reference with the value returned by a SecretProvider.
 
 Keeping references (not literals) in the manifest is what lets the manifest
 stay in git: the literal token only ever exists on the workstation's
-gitignored secret store (or, later, IFRA).
+gitignored secret store (or, later, INFRA — the homelab Infrastructure
+service that owns inventory, MAC reservation, and the pfSense API bridge).
 """
 
 from __future__ import annotations

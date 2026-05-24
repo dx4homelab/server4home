@@ -2,7 +2,7 @@
 Description=server4home: assign hostname on first boot
 Documentation=https://github.com/dx4homelab/server4home
 After=systemd-machine-id-commit.service
-Before=k3s.service setup-rancher-data.service server4home-ifra-register.service
+Before=k3s.service setup-rancher-data.service server4home-infra-register.service
 ConditionPathExists=/usr/libexec/server4home/set-hostname.sh
 
 [Service]

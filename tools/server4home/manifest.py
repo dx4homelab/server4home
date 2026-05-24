@@ -22,7 +22,7 @@ class MacSpec(BaseModel):
 
     model_config = ConfigDict(extra="allow")
 
-    provisioner: Literal["default", "fixed", "ifra"] = "default"
+    provisioner: Literal["default", "fixed", "infra"] = "default"
     fixed: str | None = None  # used when provisioner == "fixed"
 
     @model_validator(mode="after")
@@ -134,6 +134,18 @@ class Manifest(BaseModel):
     network: list[NetworkSpec] = Field(default_factory=list)
     install: list[InstallSpec] = Field(default_factory=list)
     proxmox: ProxmoxConfig | None = None   # only honored when target == "pve9"
+
+    # Forward-looking knob. When set, a future first-boot service in the
+    # image reads this via SMBIOS and runs:
+    #   bootc switch <upgrade2image> && bootc upgrade --apply
+    # so the VM lands on the GHCR-published image (with cosign signatures
+    # and a working `bootc-fetch-apply-updates.timer`) instead of staying
+    # pinned to the qcow2's `localhost/...` ref. Until that service lands
+    # (see docs/bootc-switch-automation.md), this field is captured by
+    # Pydantic (typo-protected) but not yet consumed by the runner — the
+    # current workaround is the manual one-liner:
+    #   sudo bootc switch <ref> && sudo bootc upgrade --apply
+    upgrade2image: str | None = None
 
     # Resolved file path (set after loading); not part of the YAML itself.
     source_path: Path | None = None

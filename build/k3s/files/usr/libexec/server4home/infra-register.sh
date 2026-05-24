@@ -1,27 +1,33 @@
 #!/usr/bin/env bash
 #
-# ifra-register.sh — best-effort first-boot registration with the IFRA
-# (homelab inventory) API.
+# infra-register.sh — best-effort first-boot registration with the homelab
+# INFRA (Infrastructure) API.
+#
+# INFRA is the planned homelab infrastructure service: resource inventory,
+# MAC address reservation, and a programmatic bridge to the pfSense firewall
+# (https://firewall.home.andreevs.net/api/v2/documentation). Until that
+# service is deployed, this script is a no-op that fails gracefully — boot
+# and K3s never depend on it.
 #
 # Sends this host's primary-NIC MAC and hostname to the configured endpoint.
 # On error the script logs and exits 0 — registration is advisory, never a
 # blocker for boot or for K3s. On success, a sentinel file is written so we
 # do not re-register on every boot.
 #
-# Override the endpoint with /etc/server4home/ifra.conf, e.g.:
-#   IFRA_URL=https://ifra.local.example.com/api/ifra/mac-addresses/reserve-mac-address
-#   IFRA_INSECURE=1   # skip TLS verify (self-signed homelab cert)
+# Override the endpoint with /etc/server4home/infra.conf, e.g.:
+#   INFRA_URL=https://infra.local.example.com/api/infra/mac-addresses/reserve-mac-address
+#   INFRA_INSECURE=1   # skip TLS verify (self-signed homelab cert)
 
 set -euo pipefail
 
-log()  { printf '[ifra-register] %s\n' "$*"; }
+log()  { printf '[infra-register] %s\n' "$*"; }
 
-SENTINEL="/var/lib/server4home/.ifra-registered"
-IFRA_URL="https://ifra.local.homelabsolutions.nen/api/ifra/mac-addresses/reserve-mac-address"
-IFRA_INSECURE=0
+SENTINEL="/var/lib/server4home/.infra-registered"
+INFRA_URL="https://infra.local.homelabsolutions.net/api/infra/mac-addresses/reserve-mac-address"
+INFRA_INSECURE=0
 
 # Operator overrides, if any.
-[[ -r /etc/server4home/ifra.conf ]] && source /etc/server4home/ifra.conf
+[[ -r /etc/server4home/infra.conf ]] && source /etc/server4home/infra.conf
 
 if [[ -f "$SENTINEL" ]]; then
     log "Already registered (sentinel $SENTINEL present); nothing to do."
@@ -44,7 +50,7 @@ fi
 mac="$(cat "$mac_path")"
 hostname="$(hostnamectl --static 2>/dev/null || hostname)"
 
-log "POST $IFRA_URL  mac=$mac hostname=$hostname iface=$iface"
+log "POST $INFRA_URL  mac=$mac hostname=$hostname iface=$iface"
 
 curl_args=(
     --silent --show-error
@@ -55,9 +61,9 @@ curl_args=(
     --header 'Content-Type: application/json'
     --request POST
     --data "{\"mac\":\"$mac\",\"hostname\":\"$hostname\",\"interface\":\"$iface\"}"
-    "$IFRA_URL"
+    "$INFRA_URL"
 )
-[[ "$IFRA_INSECURE" == "1" ]] && curl_args=(--insecure "${curl_args[@]}")
+[[ "$INFRA_INSECURE" == "1" ]] && curl_args=(--insecure "${curl_args[@]}")
 
 if response=$(curl "${curl_args[@]}" 2>&1); then
     log "Registration succeeded. Response: $response"
@@ -66,7 +72,7 @@ if response=$(curl "${curl_args[@]}" 2>&1); then
         echo "registered_at=$(date -Is)"
         echo "mac=$mac"
         echo "hostname=$hostname"
-        echo "url=$IFRA_URL"
+        echo "url=$INFRA_URL"
     } > "$SENTINEL"
 else
     rc=$?

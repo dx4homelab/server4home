@@ -27,6 +27,16 @@ target: pve9
 proxmox:
   vmid: 70010
 
+# Switch to this image on next boot.
+# Until the first-boot bootc-switch service lands (see
+# docs/bootc-switch-automation.md), this is informational — the VM still
+# needs the manual one-liner after first deploy:
+#   sudo bootc switch ghcr.io/dx4homelab/server4home-k3s:stable && \
+#     sudo bootc upgrade --apply
+# Once the service lands, that command runs automatically and this field
+# becomes the single source of truth for the upgrade target.
+upgrade2image: ghcr.io/dx4homelab/server4home-k3s:stable
+
 resources:
   memory: 16384
   vcpus: 4

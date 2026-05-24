@@ -59,7 +59,7 @@ network:
   - name: default
     type: bridge
     mac:
-      provisioner: default        # default | fixed | ifra
+      provisioner: default        # default | fixed | infra
     ip:
       provisioner: dhcp           # dhcp | static
       # static: 192.168.120.50/16
@@ -151,8 +151,9 @@ $EDITOR secrets/secrets.yaml      # fill in real values
 ```
 
 Override the store path with `$S4H_SECRETS_FILE`, or the provider with the
-manifest's top-level `secret_provider:` key. A future `ifra` provider will
-fetch from the homelab inventory API — the manifest stays identical.
+manifest's top-level `secret_provider:` key. A future `infra` provider will
+fetch from the homelab Infrastructure (INFRA) service — the manifest stays
+identical.
 
 ### Per-hostname overlays
 
@@ -291,7 +292,7 @@ Five extension points, each backed by a `Registry` in
 | Registry           | Lives in                          | Built-ins                                                                |
 | ------------------ | --------------------------------- | ------------------------------------------------------------------------ |
 | `targets`          | `server4home/targets/`            | `local-virt-manager`, `pve9` (stub)                                      |
-| `mac_provisioners` | `server4home/provisioners/mac.py` | `default`, `fixed`, `ifra` (stub)                                        |
+| `mac_provisioners` | `server4home/provisioners/mac.py` | `default`, `fixed`, `infra` (stub)                                       |
 | `ip_provisioners`  | `server4home/provisioners/ip.py`  | `dhcp`, `static`                                                         |
 | `installers`       | `server4home/installers/`         | `k3s`, `cert-manager`, `rancher-manager`, `kubernetes-secret`, `metallb` |
 | `secret_providers` | `server4home/secrets/`            | `local`                                                                  |
@@ -362,5 +363,5 @@ install:
 - `pve9` target has **no data-disk identity check** yet (unlike
   `local-virt-manager`). Identity-mismatch on a preserved data disk in
   Proxmox surfaces as a K3s restart loop after boot.
-- `mac.provisioner: ifra` raises NotImplementedError — lands with the IFRA
-  inventory service.
+- `mac.provisioner: infra` raises NotImplementedError — lands with the INFRA
+  (homelab Infrastructure) service.
