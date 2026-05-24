@@ -50,6 +50,51 @@ from .base import CreateResult, IdentityMismatchError, Target
 
 QCOW2_SRC = Path(os.environ.get("QCOW2_SRC", "output/qcow2/disk.qcow2"))
 
+# Marker line written into a VM's `description` field by `create()` so that a
+# later `create()` against the same VMID can detect identity mismatches
+# (e.g. someone renamed `hostname:` in the manifest but kept the same pinned
+# `proxmox.vmid:`). On PVE, destroying a VM destroys its data disks along
+# with it — there's no "preserve data disk across VM destroy" the way libvirt
+# files in /var/lib/libvirt/images survive. So re-deploy on PVE is destructive
+# by definition, and the identity check is the gate that forces an
+# explicit acknowledgment (--wipe-data) before that destruction happens.
+IDENTITY_MARKER = "# server4home:data-identity"
+
+
+def _read_identity_from_description(desc: str | None) -> str | None:
+    """Pull the recorded server4home hostname out of a VM description.
+
+    The marker has the form: `# server4home:data-identity hostname=<name>`.
+    Returns None if absent. Robust to user-added notes around it.
+    """
+    if not desc:
+        return None
+    for line in desc.splitlines():
+        line = line.strip()
+        if not line.startswith(IDENTITY_MARKER):
+            continue
+        rest = line[len(IDENTITY_MARKER):].strip()
+        for pair in rest.split():
+            k, _, v = pair.partition("=")
+            if k == "hostname":
+                return v
+    return None
+
+
+def _update_description_with_identity(prior: str | None, hostname: str) -> str:
+    """Return a new description that preserves any user-authored lines but
+    replaces (or appends) the server4home identity marker.
+
+    Idempotent — running it twice with the same args yields the same output.
+    """
+    user_lines = [
+        ln for ln in (prior or "").splitlines()
+        if not ln.strip().startswith(IDENTITY_MARKER)
+    ]
+    marker = f"{IDENTITY_MARKER} hostname={hostname}"
+    user_lines.append(marker)
+    return "\n".join(line.rstrip() for line in user_lines).strip() + "\n"
+
 
 @targets.register("pve9")
 class Pve9(Target):
@@ -97,6 +142,15 @@ class Pve9(Target):
         # Proxmox's /cluster/nextid for a free integer.
         vmid = self._resolve_vmid(manifest)
         log.info("PVE target: vmid=%d node=%s host=%s", vmid, self.node, self.host)
+
+        # 1b) Pre-flight identity check. If a VM already exists at this VMID,
+        # consult its description for a server4home identity marker and decide
+        # whether re-deploy is safe. PVE destroys disks along with VMs, so
+        # re-deploy is destructive by definition — the check forces explicit
+        # --wipe-data acknowledgement.
+        existing_config = self._get_vm_config_or_none(vmid)
+        if existing_config is not None:
+            self._handle_existing_vm(manifest, vmid, existing_config, wipe_data)
 
         # 2) Build the SMBIOS args. Two distinct slots in QEMU/Proxmox:
         #    - smbios1:    DMI type 1 (manufacturer/product/etc.) — first-class qm setting,
@@ -237,6 +291,11 @@ class Pve9(Target):
         config = self._api("GET", f"/nodes/{self.node}/qemu/{vmid}/config")
         mac = self._mac_from_net0(config.get("net0", "")) or None
 
+        # 10) Stamp the identity marker into the VM's description so future
+        # re-deploys can detect manifest renames.
+        self._write_identity_to_vm(vmid, manifest.hostname,
+                                   prior_description=None)
+
         return CreateResult(vm_name=vm, mac=mac)
 
     # ------------------------------------------------------------------ #
@@ -285,15 +344,126 @@ class Pve9(Target):
         except RuntimeError:
             log.info("VM '%s' not found on %s; nothing to destroy", manifest.hostname, self.node)
             return
-        log.info("Stopping VM %d", vmid)
-        self._wait_for_task(self._api(
-            "POST", f"/nodes/{self.node}/qemu/{vmid}/status/stop", data={},
-        ))
+        self._destroy_vm_by_vmid(vmid)
+
+    def _destroy_vm_by_vmid(self, vmid: int) -> None:
+        """Stop + delete a VM by VMID (no lookup-by-name). Idempotent: a
+        missing VM is a successful no-op.
+
+        Used by both ``destroy()`` (after lookup-by-name) and by the
+        ``--wipe-data`` path in ``create()`` (where the VM may have a
+        different name than the new manifest's hostname).
+        """
+        # `qm stop` on an already-stopped VM is a no-op task; ignore the
+        # "not running" error from the API. Same for the DELETE on a
+        # missing VM (in case the VM disappeared between lookup and now).
+        try:
+            log.info("Stopping VM %d", vmid)
+            self._wait_for_task(self._api(
+                "POST", f"/nodes/{self.node}/qemu/{vmid}/status/stop", data={},
+            ))
+        except Exception as e:
+            log.info("VM %d stop: %s (continuing)", vmid, e)
         log.info("Deleting VM %d (and all its disks)", vmid)
         self._wait_for_task(self._api(
             "DELETE", f"/nodes/{self.node}/qemu/{vmid}",
             params={"purge": 1, "destroy-unreferenced-disks": 1},
         ))
+
+    # ------------------------------------------------------------------ #
+    # Identity check helpers
+    # ------------------------------------------------------------------ #
+    def _get_vm_config_or_none(self, vmid: int) -> dict | None:
+        """Return the VM's config dict if it exists, else None.
+
+        Used by `create()` to check whether the target vmid is already
+        occupied — the actual config tells us both 'does it exist' and
+        'what identity does it claim'.
+        """
+        try:
+            return self._api("GET", f"/nodes/{self.node}/qemu/{vmid}/config")
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 500 and "does not exist" in e.response.text:
+                return None
+            # 404 / other client errors: VM is not there.
+            if 400 <= e.response.status_code < 500:
+                return None
+            raise
+
+    def _handle_existing_vm(self, manifest: Manifest, vmid: int,
+                            existing_config: dict, wipe_data: bool) -> None:
+        """Pre-flight: decide what to do when a VM already exists at vmid.
+
+        Three cases:
+          1. Recorded identity matches manifest.hostname  → require --wipe-data
+             (any re-create on PVE wipes the data disk; user must opt in).
+          2. Recorded identity DIFFERS from manifest.hostname → likely a rename
+             mistake. Refuse without --wipe-data; the message names both
+             hostnames so the operator can decide.
+          3. No recorded identity (VM predates this feature, or was created
+             outside server4home) → refuse without --wipe-data — we can't
+             verify anything.
+        """
+        desc = existing_config.get("description")
+        recorded = _read_identity_from_description(desc)
+        existing_name = existing_config.get("name") or "<unnamed>"
+
+        if recorded is None:
+            if not wipe_data:
+                raise IdentityMismatchError(
+                    f"VM {vmid} ('{existing_name}') exists on node "
+                    f"'{self.node}' but has no server4home identity marker "
+                    f"in its description — runner cannot verify safe reuse. "
+                    f"Pass --wipe-data to destroy it and rebuild, or destroy "
+                    f"it manually first (`qm destroy {vmid} --purge 1`)."
+                )
+            log.warning("VM %d exists with no identity marker; --wipe-data "
+                        "set → destroying", vmid)
+        elif recorded != manifest.hostname:
+            if not wipe_data:
+                raise IdentityMismatchError(
+                    f"VM {vmid} was created for hostname '{recorded}'; "
+                    f"current manifest hostname is '{manifest.hostname}'. "
+                    f"This usually means the manifest's `hostname:` was "
+                    f"renamed but `proxmox.vmid:` was kept. Either:\n"
+                    f"  - fix the manifest hostname back to '{recorded}', or\n"
+                    f"  - pass --wipe-data (= `just deploy-fresh ...`) to "
+                    f"destroy VM {vmid} and rebuild under the new name."
+                )
+            log.warning("Identity rename detected: '%s' -> '%s'; --wipe-data "
+                        "set → destroying VM %d", recorded, manifest.hostname,
+                        vmid)
+        else:
+            # Same hostname, same vmid → idempotent re-deploy. On PVE this
+            # would still wipe the data disk (no preservation across VM
+            # destroy), so we treat it the same as a wipe and force the
+            # operator to acknowledge.
+            if not wipe_data:
+                raise IdentityMismatchError(
+                    f"VM {vmid} already exists for hostname "
+                    f"'{manifest.hostname}'. On Proxmox, re-creating it "
+                    f"destroys the data disk (and the K3s/etcd state on it). "
+                    f"Choose:\n"
+                    f"  - reconcile installers only (recommended for chart "
+                    f"bumps, no VM touch):\n"
+                    f"      just apply {manifest.source_path or '<manifest>'}\n"
+                    f"  - rebuild from scratch (destroys the cluster):\n"
+                    f"      just deploy-fresh {manifest.source_path or '<manifest>'}"
+                )
+            log.warning("Re-deploy of same identity '%s' with --wipe-data → "
+                        "destroying VM %d", manifest.hostname, vmid)
+
+        # All paths that reach here have wipe_data=True (or the no-identity
+        # path was downgraded to a warning). Destroy the existing VM.
+        self._destroy_vm_by_vmid(vmid)
+
+    def _write_identity_to_vm(self, vmid: int, hostname: str,
+                              *, prior_description: str | None) -> None:
+        """Write/update the identity marker in the VM's description."""
+        new_desc = _update_description_with_identity(prior_description, hostname)
+        self._api("PUT", f"/nodes/{self.node}/qemu/{vmid}/config", data={
+            "description": new_desc,
+        })
 
     # ------------------------------------------------------------------ #
     # API client + helpers

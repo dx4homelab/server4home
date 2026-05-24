@@ -97,6 +97,28 @@ fetched kubeconfig — no VM touch, no SSH. Installers that report
 Use `--only rancher-manager` / `--skip k3s,metallb` for fine-grained
 runs. Events go into the deployment-history ledger as `kind: "apply"`.
 
+### Re-deploy safety on Proxmox
+
+On Proxmox, destroying a VM also destroys its disks (no
+"data-disk-survives-VM-destroy" the way it works on libvirt). So
+re-running `just deploy` on a manifest whose VM already exists is, by
+definition, destructive — it would wipe the K3s/etcd state on the data
+disk. The runner refuses this case with a clear error and points at the
+right alternative (usually `just apply`, sometimes `just deploy-fresh`).
+
+The check works by stamping the VM's PVE description with a marker line:
+
+```text
+# server4home:data-identity hostname=<name>
+```
+
+…on every successful `deploy`. On the next deploy, the runner reads the
+description and compares the recorded hostname to the manifest's. A
+mismatch surfaces an `IdentityMismatchError` with the previous hostname,
+the new hostname, and the two ways to proceed (fix the manifest, or pass
+`--wipe-data`). Manual-edit-the-description-and-add-notes is fine — the
+runner preserves user lines around its marker.
+
 ### Pinning a Proxmox VMID
 
 When `target: pve9`, the runner picks the VMID in this order:
