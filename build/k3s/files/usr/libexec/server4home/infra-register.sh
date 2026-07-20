@@ -26,7 +26,8 @@ SENTINEL="/var/lib/server4home/.infra-registered"
 INFRA_URL="https://infra.local.homelabsolutions.net/api/infra/mac-addresses/reserve-mac-address"
 INFRA_INSECURE=0
 
-# Operator overrides, if any.
+# Operator overrides, if any (runtime-provided; absent at build/lint time).
+# shellcheck source=/dev/null
 [[ -r /etc/server4home/infra.conf ]] && source /etc/server4home/infra.conf
 
 if [[ -f "$SENTINEL" ]]; then
