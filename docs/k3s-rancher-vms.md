@@ -540,34 +540,38 @@ gh api --method PATCH /user/packages/container/server4home-k3s -f visibility=pub
 
 (Substitute `/orgs/<org>/...` if publishing under an organization.)
 
-### Verifying cosign signatures on a VM (optional)
+### Verifying cosign signatures (enabled by default)
 
-To require valid signatures before `bootc upgrade` accepts an image:
+Signature verification is **baked into the image** by [`build/10-build.sh`](../build/10-build.sh),
+so `bootc upgrade`/`bootc switch` refuse an unsigned or tampered image out of the
+box — no per-VM setup. The build installs the public key to
+`/usr/lib/pki/containers/server4home.pub`, adds a
+`/etc/containers/registries.d/dx4homelab.yaml` (`use-sigstore-attachments: true`),
+and merges `sigstoreSigned` rules for `ghcr.io/dx4homelab/server4home` and
+`…/server4home-k3s` into the base `policy.json` (scoped to the server4home family
+so sibling images signed with other keys still fall through the catch-all).
+
+To confirm it's active on a running VM:
 
 ```bash
-# Extract the public key from your local cosign.key (one-time, on the
-# workstation where you keep the key):
-cosign public-key --key cosign.key > cosign.pub
+# Direct cosign check against the baked key:
+cosign verify --key /usr/lib/pki/containers/server4home.pub \
+  ghcr.io/dx4homelab/server4home:stable
 
-# On the VM:
-sudo install -m 0644 cosign.pub /etc/pki/containers/server4home.pub
-sudo tee /etc/containers/policy.json >/dev/null <<'JSON'
-{
-  "default": [{"type": "insecureAcceptAnything"}],
-  "transports": {
-    "docker": {
-      "ghcr.io/dx4homelab": [{
-        "type": "sigstoreSigned",
-        "keyPath": "/etc/pki/containers/server4home.pub"
-      }]
-    }
-  }
-}
-JSON
+# Or exercise the full policy path (fails closed if signature is bad/missing):
+sudo podman pull ghcr.io/dx4homelab/server4home:stable
 ```
 
-After this, an unsigned or tampered image in `ghcr.io/dx4homelab/*` causes
-`bootc upgrade` to refuse.
+**Migrating a VM that has a local `policy.json` override:** on this immutable
+base, `/etc` is a writable overlay over the image's defaults (kept in
+`/usr/etc`). A hand-edited `/etc/containers/policy.json` therefore *shadows* the
+version baked into the image and survives the switch. To hand control back to
+the image so future updates manage the policy, reset that one file to the image
+default:
+
+```bash
+sudo cp /usr/etc/containers/policy.json /etc/containers/policy.json
+```
 
 ### Cluster admin
 
