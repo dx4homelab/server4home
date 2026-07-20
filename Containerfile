@@ -42,6 +42,10 @@ FROM scratch AS ctx
 
 COPY build /build
 COPY custom /custom
+# The image's own cosign public key, baked in so build/10-build.sh can enable
+# signature verification for the server4home image family (single source of
+# truth: the repo-root cosign.pub that CI signs with).
+COPY cosign.pub /cosign.pub
 # Copy from OCI containers to distinct subdirectories to avoid conflicts
 # Note: Renovate can automatically update these :latest tags to SHA-256 digests for reproducibility
 COPY --from=ghcr.io/projectbluefin/common:latest@sha256:b8fe93b16674a547b4cf38493af19caa484d9575956fc3be04ca3d10faec23ff /system_files /oci/common

@@ -255,9 +255,9 @@ jobs:
           password: ${{ env.REGISTRY_PASSWORD }}
 
       # Image signing with Cosign. Signs every tag of both flavors using the
-      # repository's SIGNING_SECRET. VMs that consume these images can opt
-      # into signature verification by configuring /etc/containers/policy.json
-      # and a /etc/containers/registries.d/*.yaml entry — see docs/.
+      # repository's SIGNING_SECRET. The corresponding public key (cosign.pub)
+      # is baked into the image by build/10-build.sh, so consumers verify these
+      # signatures on `bootc upgrade`/`switch` by default — no per-VM setup.
       - name: Install Cosign
         uses: sigstore/cosign-installer@d7543c93d881b35a8faa02e8e3605f69b7a1ce62 # v3.10.0
         if: github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)

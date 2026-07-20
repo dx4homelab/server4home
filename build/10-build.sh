@@ -51,6 +51,57 @@ echo "::group:: Install Packages"
 
 echo "::endgroup::"
 
+echo "::group:: Container Image Signature Verification"
+
+# Bake cosign signature verification for this image's own registry namespace so
+# that `bootc upgrade`/`bootc switch` refuse an unsigned or tampered image out of
+# the box — no per-VM /etc configuration required. Covers the base image
+# (ghcr.io/dx4homelab/server4home) and the K3s flavor (…/server4home-k3s), which
+# CI signs with the same key. Because the K3s flavor is built FROM this base, it
+# inherits all of this automatically.
+
+# Key goes in /usr/lib (immutable, part of the image) rather than /etc, which is
+# overlay-managed and reset on deploy for Fedora CoreOS bases.
+install -D -m 0644 /ctx/cosign.pub /usr/lib/pki/containers/server4home.pub
+
+# Tell containers/image to look for cosign's sigstore attachments — the
+# sha256-<digest>.sig tags — in this registry. Without this the signatures are
+# never fetched and verification fails closed.
+install -d -m 0755 /etc/containers/registries.d
+cat > /etc/containers/registries.d/dx4homelab.yaml <<'EOF'
+docker:
+  ghcr.io/dx4homelab:
+    use-sigstore-attachments: true
+EOF
+
+# Merge sigstoreSigned rules into the base policy, preserving its default:reject,
+# the ublue-os rules, and the docker catch-all. Scoped to the server4home family
+# repos specifically (not the whole org) so sibling images signed with other keys
+# — e.g. ghcr.io/dx4homelab/bluefin-dx — keep falling through the catch-all and a
+# rebase to them is not blocked. Add a repo here if a new flavor is published.
+python3 - <<'PY'
+import json, os
+
+path = "/etc/containers/policy.json"
+policy = json.load(open(path)) if os.path.exists(path) else {
+    "default": [{"type": "reject"}],
+    "transports": {"docker": {"": [{"type": "insecureAcceptAnything"}]}},
+}
+rule = [{
+    "type": "sigstoreSigned",
+    "keyPath": "/usr/lib/pki/containers/server4home.pub",
+    "signedIdentity": {"type": "matchRepository"},
+}]
+docker = policy.setdefault("transports", {}).setdefault("docker", {})
+for repo in ("ghcr.io/dx4homelab/server4home", "ghcr.io/dx4homelab/server4home-k3s"):
+    docker[repo] = rule
+with open(path, "w") as f:
+    json.dump(policy, f, indent=4)
+    f.write("\n")
+PY
+
+echo "::endgroup::"
+
 echo "::group:: System Configuration"
 
 # Enable/disable systemd services
