@@ -95,6 +95,11 @@ RUN --mount=type=bind,from=ctx,source=/,target=/ctx \
     --mount=type=tmpfs,dst=/tmp \
     /ctx/build/10-build.sh
     
+### System file overlay
+## Static files baked into the image (systemd quadlets, modules-load.d, config
+## templates), copied verbatim to the rootfs. Same pattern as Containerfile.k3s.
+COPY build/files/ /
+
 ### LINTING
 ## Verify final image and contents are correct.
 RUN bootc container lint
