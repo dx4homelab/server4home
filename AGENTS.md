@@ -519,14 +519,15 @@ Branch=stable
 
 **Files**:
 - `iso/disk.toml` - VM images (QCOW2/RAW): `just build-qcow2`
-- `iso/iso.toml` - Installer ISO: `just build-iso`
+- `iso/iso-plain.toml` - Base/storage installer ISO (non-LVM, no rebase): `just build-iso-plain`
+- `iso/iso-k3s.toml` - K3s installer ISO (rebases to `-k3s` on first boot): `just build-iso-k3s`
 
-**CRITICAL** - Update bootc switch URL in `iso/iso.toml`:
+**CRITICAL** - Update bootc switch URL in `iso/iso-k3s.toml`:
 ```toml
 [customizations.installer.kickstart]
 contents = """
 %post
-bootc switch --mutate-in-place --transport registry ghcr.io/USERNAME/REPO:stable
+bootc switch --mutate-in-place --transport registry ghcr.io/USERNAME/REPO-k3s:stable
 %end
 """
 ```
@@ -659,7 +660,7 @@ COSIGN_PASSWORD="" cosign generate-key-pair
 9. **NEVER** push directly to main (only via Release Please)
 10. **ALWAYS** confirm with user before deviating from @ublue-os/bluefin patterns
 11. **ALWAYS** run shellcheck/YAML validation before committing
-12. **ALWAYS** update bootc switch URL in `iso/iso.toml` to match user's repo
+12. **ALWAYS** update bootc switch URL in `iso/iso-k3s.toml` to match user's repo
 13. **ALWAYS** follow numbered script convention: `10-*.sh`, `20-*.sh`, `30-*.sh`
 14. **ALWAYS** check example scripts before creating new patterns (`.example` files in `build/`)
 15. **ALWAYS** validate that new Flatpak IDs exist on Flathub before adding
@@ -678,7 +679,7 @@ COSIGN_PASSWORD="" cosign generate-key-pair
 | PR validation fails: Flatpak | Invalid app ID | Verify app ID exists on https://flathub.org/ |
 | PR validation fails: justfile | Invalid just syntax | Run `just --list` locally to test |
 | Changes not in production | Wrong workflow | Push to main (via PR) to trigger stable builds |
-| ISO missing customizations | Wrong bootc URL | Update `iso/iso.toml` bootc switch URL to match repo |
+| ISO missing customizations | Wrong bootc URL | Update `iso/iso-k3s.toml` bootc switch URL to match repo |
 | COPR packages missing after boot | COPR not disabled | COPRs persist if not disabled - use `copr_install_isolated` |
 | ujust commands not working | Wrong install location | Files must be in `custom/ujust/` and copied to `/usr/share/ublue-os/just/` |
 | Flatpaks not installed | Expected behavior | Flatpaks install post-first-boot, not in ISO/container |
@@ -810,8 +811,8 @@ just build && just build-qcow2 && just run-vm-qcow2
 **Alternative**: Build ISO for installation testing
 ```bash
 just build
-just build-iso
-just run-vm-iso
+just build-iso-plain    # base/storage installer (non-LVM); or build-iso-k3s
+just run-vm-iso-plain
 ```
 
 ### Pattern 7: Pre-commit Validation (Optional)

@@ -1,8 +1,13 @@
-# Anaconda ISO Installer Configuration
-# This configuration creates a bootable ISO image for installing your custom bootc image.
+# K3s installer ISO configuration.
 #
-# The installer will guide users through disk partitioning and basic system setup,
-# then automatically switch to your custom image on first boot.
+# Creates a bootable ISO that installs the base image, then rebases the running
+# root to the K3s flavor on first boot (see %post below). Build with:
+# just build-iso-k3s
+#
+# The installer guides the user through disk partitioning interactively. NOTE:
+# uCore has no LVM in its initramfs, so if you install to bare metal here, pick
+# "Standard Partition" (NOT the LVM default) or the installed node won't boot.
+# For a non-LVM, non-K3s storage install use iso-plain.toml instead.
 
 [customizations.installer.kickstart]
 contents = """

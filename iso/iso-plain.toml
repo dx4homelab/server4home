@@ -1,0 +1,46 @@
+# Base ("plain" / storage) installer ISO configuration.
+#
+# Installs the BASE ghcr.io/dx4homelab/server4home image. Unlike iso-k3s.toml
+# there is NO %post rebase — the installed system stays on server4home:stable.
+# Build with: just build-iso-plain
+#
+# WHY THE PINNED PARTITIONING:
+# uCore (Fedora CoreOS) omits LVM from its initramfs
+# (omit_dracutmodules includes "lvm"), so an LVM root will NOT boot — dracut
+# hangs waiting for the root device. Anaconda's *default* autopart is LVM,
+# which is exactly that trap. This kickstart forces a plain (non-LVM) layout.
+#
+# The kickstart targets the internal NVMe (nvme0n1) ONLY and never touches the
+# data HDDs (sda-sdd) — safe for a ZFS storage host. Change --only-use/--drives
+# if your OS disk is named differently.
+#
+# WARNING: clearpart wipes nvme0n1 as part of the guided install. Only boot
+# this installer on the machine you intend to (re)install.
+
+[customizations.installer.kickstart]
+contents = """
+# --- Disk: internal NVMe only; leave the ZFS data drives (sda-sdd) untouched ---
+ignoredisk --only-use=nvme0n1
+clearpart --all --initlabel --disklabel=gpt --drives=nvme0n1
+
+# --- Plain partitions, NO LVM (uCore initramfs can't assemble an LVM root) ---
+autopart --type=plain --nohome
+"""
+
+[customizations.installer.modules]
+# Storage stays enabled so Anaconda can partition (driven non-interactively by
+# the kickstart above); the remaining screens (user, timezone) are guided.
+enable = [
+  "org.fedoraproject.Anaconda.Modules.Storage",    # Disk partitioning and formatting
+  "org.fedoraproject.Anaconda.Modules.Runtime",    # Basic runtime configuration
+  "org.fedoraproject.Anaconda.Modules.Network",    # Network configuration
+  "org.fedoraproject.Anaconda.Modules.Security",   # Security settings
+  "org.fedoraproject.Anaconda.Modules.Services",   # System services
+  "org.fedoraproject.Anaconda.Modules.Users",      # User account creation
+  "org.fedoraproject.Anaconda.Modules.Timezone"    # Timezone selection
+]
+
+# Disable subscription management (not needed for community images)
+disable = [
+  "org.fedoraproject.Anaconda.Modules.Subscription",
+]

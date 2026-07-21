@@ -326,9 +326,13 @@ build-qcow2 $target_image=("localhost/" + image_name) $tag=default_tag: && (_bui
 [group('Build Virtal Machine Image')]
 build-raw $target_image=("localhost/" + image_name) $tag=default_tag: && (_build-bib target_image tag "raw" "iso/disk.toml")
 
-# Build an ISO virtual machine image
+# Build the base ("plain" / storage) installer ISO — non-LVM, no K3s rebase
 [group('Build Virtal Machine Image')]
-build-iso $target_image=("localhost/" + image_name) $tag=default_tag: && (_build-bib target_image tag "iso" "iso/iso.toml")
+build-iso-plain $target_image=("localhost/" + image_name) $tag=default_tag: && (_build-bib target_image tag "iso" "iso/iso-plain.toml")
+
+# Build the K3s installer ISO — rebases to the K3s flavor on first boot
+[group('Build Virtal Machine Image')]
+build-iso-k3s $target_image=("localhost/" + image_name) $tag=default_tag: && (_build-bib target_image tag "iso" "iso/iso-k3s.toml")
 
 # Rebuild a QCOW2 virtual machine image
 [group('Build Virtal Machine Image')]
@@ -338,9 +342,13 @@ rebuild-qcow2 $target_image=("localhost/" + image_name) $tag=default_tag: && (_r
 [group('Build Virtal Machine Image')]
 rebuild-raw $target_image=("localhost/" + image_name) $tag=default_tag: && (_rebuild-bib target_image tag "raw" "iso/disk.toml")
 
-# Rebuild an ISO virtual machine image
+# Rebuild the base ("plain" / storage) installer ISO — non-LVM, no K3s rebase
 [group('Build Virtal Machine Image')]
-rebuild-iso $target_image=("localhost/" + image_name) $tag=default_tag: && (_rebuild-bib target_image tag "iso" "iso/iso.toml")
+rebuild-iso-plain $target_image=("localhost/" + image_name) $tag=default_tag: && (_rebuild-bib target_image tag "iso" "iso/iso-plain.toml")
+
+# Rebuild the K3s installer ISO — rebases to the K3s flavor on first boot
+[group('Build Virtal Machine Image')]
+rebuild-iso-k3s $target_image=("localhost/" + image_name) $tag=default_tag: && (_rebuild-bib target_image tag "iso" "iso/iso-k3s.toml")
 
 # Run a virtual machine with the specified image type and configuration
 # The VM joins your LAN via DHCP through a macvlan network (the VM gets its
@@ -411,9 +419,13 @@ run-vm-qcow2 $target_image=("localhost/" + image_name) $tag=default_tag: && (_ru
 [group('Run Virtal Machine')]
 run-vm-raw $target_image=("localhost/" + image_name) $tag=default_tag: && (_run-vm target_image tag "raw" "iso/disk.toml")
 
-# Run a virtual machine from an ISO
+# Run a virtual machine from the base ("plain") installer ISO
 [group('Run Virtal Machine')]
-run-vm-iso $target_image=("localhost/" + image_name) $tag=default_tag: && (_run-vm target_image tag "iso" "iso/iso.toml")
+run-vm-iso-plain $target_image=("localhost/" + image_name) $tag=default_tag: && (_run-vm target_image tag "iso" "iso/iso-plain.toml")
+
+# Run a virtual machine from the K3s installer ISO
+[group('Run Virtal Machine')]
+run-vm-iso-k3s $target_image=("localhost/" + image_name) $tag=default_tag: && (_run-vm target_image tag "iso" "iso/iso-k3s.toml")
 
 # Attaches the VM to the host bridge (default: br0), so the VM is a peer on
 # your LAN — reachable from every host on the network, including this one.

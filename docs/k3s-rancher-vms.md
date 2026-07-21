@@ -624,7 +624,8 @@ plugin uses to apply manifest-supplied `args:`.
 | [build/k3s/files/etc/rancher/k3s/config.yaml](../build/k3s/files/etc/rancher/k3s/config.yaml) | Baked K3s config (kubeconfig perms, etc.) |
 | [build/k3s/files/etc/server4home/k3s.conf.example](../build/k3s/files/etc/server4home/k3s.conf.example) | K3s runtime mode config template |
 | [iso/disk.toml](../iso/disk.toml) | BIB qcow2/raw partitioning + baked user |
-| [iso/iso.toml](../iso/iso.toml) | Anaconda ISO kickstart |
+| [iso/iso-k3s.toml](../iso/iso-k3s.toml) | Anaconda ISO kickstart (K3s flavor: rebases to `-k3s` on first boot) |
+| [iso/iso-plain.toml](../iso/iso-plain.toml) | Anaconda ISO kickstart (base/storage flavor: non-LVM, no rebase) |
 | [Justfile](../Justfile) | All build/run/deploy recipes |
 | [instances/](../instances/) | Per-VM YAML manifests |
 | [tools/](../tools/) | Python deploy runner (`server4home` CLI) |
