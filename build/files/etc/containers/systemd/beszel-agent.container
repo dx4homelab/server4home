@@ -1,0 +1,24 @@
+[Unit]
+Description=Beszel Agent (host metrics -> Beszel hub)
+After=network-online.target podman.socket
+Wants=network-online.target
+# Per-host secrets live in /etc/beszel/agent.env (KEY/TOKEN/HUB_URL from the
+# hub's "Add System" dialog) — see agent.env.example. Until that file exists
+# this unit stays inert, so a fresh node is never a half-configured agent and
+# no secret is baked into the (public) image.
+ConditionPathExists=/etc/beszel/agent.env
+
+[Container]
+Image=ghcr.io/henrygd/beszel/beszel-agent:latest
+ContainerName=beszel-agent
+Network=host
+# podman's socket is Docker-API compatible; maps to where the agent expects it
+Volume=/run/podman/podman.sock:/var/run/docker.sock:ro
+Volume=/var/lib/beszel/agent:/var/lib/beszel-agent:Z
+EnvironmentFile=/etc/beszel/agent.env
+
+[Service]
+Restart=always
+
+[Install]
+WantedBy=multi-user.target default.target
