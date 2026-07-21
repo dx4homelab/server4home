@@ -1,0 +1,21 @@
+[Unit]
+Description=Beszel Hub — monitoring dashboard
+After=network-online.target
+Wants=network-online.target
+# Single-instance service: only runs where /etc/beszel/hub.enabled exists, so
+# the base image doesn't turn every node into a hub. Enable on the one
+# monitoring host with: sudo touch /etc/beszel/hub.enabled
+ConditionPathExists=/etc/beszel/hub.enabled
+
+[Container]
+Image=ghcr.io/henrygd/beszel/beszel:latest
+ContainerName=beszel-hub
+PublishPort=8090:8090
+Volume=/var/lib/beszel/hub:/beszel_data:Z
+
+[Service]
+Restart=always
+TimeoutStartSec=300
+
+[Install]
+WantedBy=multi-user.target default.target
