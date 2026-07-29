@@ -52,7 +52,13 @@ COPY --from=ghcr.io/projectbluefin/common:latest@sha256:b8fe93b16674a547b4cf3849
 COPY --from=ghcr.io/ublue-os/brew:latest@sha256:ca91068f51ce663d495ccfc829352d6621ec95f6c7db447ade55023b222f9762 /system_files /oci/brew
 
 # Base Image - uCore HCI (Fedora CoreOS + virtualization stack for hyperconverged infrastructure)
-FROM ghcr.io/ublue-os/ucore-hci:latest
+# Pinned by digest so builds are reproducible and every base change arrives as a
+# reviewable Renovate PR rather than silently under a floating tag. This matters
+# most for ZFS: the kmod is built out-of-tree against one specific kernel, so when
+# a pool problem appears you need to know exactly which base moved and when.
+# Renovate bumps the digest automatically (packageRules -> matchManagers:
+# dockerfile, matchUpdateTypes: digest, automerge: true).
+FROM ghcr.io/ublue-os/ucore-hci:latest@sha256:d2464da655fe4e41a0c667573f1cd47abb63c7ab99cb845288a150f2c7f241a9
 
 ## Alternative uCore variants (uncomment to use):
 # FROM ghcr.io/ublue-os/ucore-minimal:latest      (lightweight container host, essentials only)

@@ -160,6 +160,15 @@ jobs:
           labels: ${{ steps.metadata.outputs.labels }}
           oci: false
 
+      # Gate before tagging/pushing: confirm the image's ZFS kmod matches its own
+      # kernel. uCore builds ZFS out-of-tree via ublue-os/akmods against one
+      # specific kernel; if Fedora bumps the kernel ahead of OpenZFS support the
+      # image still builds and pushes green, and the failure only surfaces when
+      # the storage server reboots and the pool will not import. Only the base is
+      # checked — the K3s flavor is built FROM it and inherits the same modules.
+      - name: ZFS smoke test
+        run: ./tools/scripts/smoke-test-zfs.sh "${{ env.IMAGE_NAME }}:${{ env.DEFAULT_TAG }}"
+
       # Tag for registry
       - name: Tag for registry
         run: |
