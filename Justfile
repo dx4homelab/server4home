@@ -299,11 +299,19 @@ _build-bib $target_image $tag $type $config: (_rootful_load_image target_image t
     # BIB writes its output into per-type subdirs (e.g. output/qcow2/disk.qcow2).
     # `mv -f` does not replace non-empty directories, so clear the type-specific
     # output dir first if a prior build of the same type left one behind.
-    if [[ "${type}" == "iso" ]]; then
-        sudo rm -rf output/bootiso
-    else
-        sudo rm -rf "output/${type}"
-    fi
+    # BIB's output subdir name does not always match the --type it was given:
+    #   --type iso   -> output/bootiso
+    #   --type raw   -> output/image      <-- not output/raw
+    #   --type qcow2 -> output/qcow2
+    # Clearing the wrong one leaves the real dir non-empty and `mv -f` fails with
+    # "cannot overwrite 'output/image': Directory not empty", silently leaving the
+    # previous build's artifact in place.
+    case "${type}" in
+        iso) bib_outdir=bootiso ;;
+        raw) bib_outdir=image ;;
+        *)   bib_outdir="${type}" ;;
+    esac
+    sudo rm -rf "output/${bib_outdir}"
     sudo mv -f $BUILDTMP/* output/
     sudo rmdir $BUILDTMP
     sudo chown -R $USER:$USER output/
