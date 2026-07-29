@@ -14,79 +14,98 @@
 [customizations.kernel]
 append = "nvme_core.default_ps_max_latency_us=0"
 
+# ===========================================================================
+# Disk layout: ALL PLAIN PARTITIONS. No LVM anywhere in the boot path.
+#
+# This mirrors the layout already running on z170asrock (and the working
+# 21-july-2026 image), with /var living inside root. Root is the LAST partition,
+# so after dd'ing to the target drive it grows with a plain:
+#
+#     growpart <disk> <root partno> && xfs_growfs /
+#
 # ---------------------------------------------------------------------------
-# LVM disk layout
-#
-# Replaces the previous simple [[customizations.filesystem]] entry — the simple
-# and advanced (customizations.disk) forms are alternatives, not additive.
-#
-# Why LVM: the boot NVMe is moving from 931 GB to 4 TB and will carry root,
-# /var (containers, appdata, Postgres) and the ZFS pool keyfile. Sizes for
-# appdata are not knowable up front, so being able to reallocate later without
-# repartitioning is worth the small extra layer. Nothing needs adding to the
-# image for this: lvm2, device-mapper, the dracut 70lvm module and
-# coreos-populate-lvmdevices.service are already present, and LVM is already
-# in the initramfs (verified with lsinitrd).
-#
-# /boot and /boot/efi are NOT listed here on purpose — bootc-image-builder
-# creates them automatically as plain partitions when root is on an LV, which
-# is required since the bootloader cannot read LVM.
-#
-# bootc-image-builder supports exactly ONE volume group, so everything lives in
-# vg4base. This is a new layout, not a reproduction of an old one: as of
-# 2026-07-29 z170asrock has NO LVM — a single 20 GiB xfs partition carries
-# /sysroot, /var and /etc, with ~911 GB of the 931 GB drive unallocated because
-# the previous dd install was never grown.
-#
-# Splitting /var out of root is the one structural change, and it is worth it on
-# an unattended server: if container images, logs or Postgres fill a shared
-# filesystem, you cannot stage an ostree upgrade or cleanly log in to fix it.
-# A separate /var confines that blast radius to /var. FCOS supports a separate
-# /var as a first-class configuration.
-#
-# Sizes are MINIMUMS, kept deliberately small so disk.raw stays quick to build
-# and to stream over HTTP during the swap (the current image is ~22 GB; this is
-# ~26 GB). The volume group is grown into the 4 TB free space after install —
-# and note LVM lets you leave VG space UNALLOCATED and hand it out later, which
-# is the whole reason for doing this.
+# WHY THERE IS NO LVM HERE — established empirically 2026-07-29
 # ---------------------------------------------------------------------------
+# Three separate attempts put a boot-critical filesystem on LVM. Each built
+# cleanly, produced a byte-correct on-disk layout, and failed to boot:
+#
+# 1. root on an LV
+#      initramfs has NO LVM support at all:
+#          dracut modules present : crypt, dm      <-- no lvm
+#          lvm files in initramfs : none
+#      FCOS finds root by LABEL; with no way to activate the VG the label never
+#      appears:
+#          dev-disk-by-label-root.device: Job ... failed with result 'timeout'
+#          Started emergency.service - Emergency Shell
+#      rd.lvm.lv= does NOT help — there is no LVM tooling in the initramfs to
+#      act on it.
+#
+# 2. root plain, /boot omitted (bib only auto-creates /boot when root is on an
+#    LV, and customizations.disk gives you exactly what you declare)
+#          error: grub_search_label:527: no such device: boot.
+#          error: grub_loader_boot:196: you need to load the kernel first.
+#
+# 3. root plain + /boot declared + /var on an LV
+#      Boots into the real root — GRUB, initramfs and ostree-prepare-root all
+#      fine — then dies because nothing activates the VG early enough:
+#          Timed out waiting for device dev-...-<var LV fs UUID>
+#          Dependency failed for var.mount - /var
+#      The image ships lvm2-monitor, lvm2-lvmpolld, lvm-devices-import and
+#      coreos-populate-lvmdevices, but NO activation unit (no lvm2-activation*,
+#      no lvm2-pvscan@). And coreos-populate-lvmdevices cannot possibly help —
+#      it declares RequiresMountsFor=/var/lib, i.e. it needs /var mounted, which
+#      is the very thing blocked. Circular.
+#
+# Conclusion: in FCOS/uCore, LVM is only safe for storage mounted LATE, after
+# basic.target. It cannot carry /, /boot or /var.
+#
+# ---------------------------------------------------------------------------
+# WHERE LVM STILL BELONGS: app data, created AFTER install
+# ---------------------------------------------------------------------------
+# The goal LVM was wanted for — snapshot app data and copy the snapshots into
+# ZFS — is fully served without touching the boot path. After install, carve a
+# partition out of the free space and put per-app LVs on it, mounted under
+# /var/lib/<app>, with mount options that degrade instead of hanging a headless
+# box:
+#
+#     nofail,x-systemd.device-timeout=30
+#
+# Then the backup flow is:
+#     xfs_freeze -f /var/lib/<app>
+#     lvcreate -s -L <cow> -n <app>-snap vg4data/<app>
+#     xfs_freeze -u /var/lib/<app>
+#     mount -o ro,nouuid /dev/vg4data/<app>-snap /mnt/snap
+#     rsync -aHAX --delete /mnt/snap/ /var/mnt/<pool>/backup/<app>/
+#     zfs snapshot <pool>/backup/<app>@<stamp>
+#     umount /mnt/snap && lvremove -f vg4data/<app>-snap
+#
+# See docs/storage-build-resume.md for the full post-install sequence.
+#
+# ---------------------------------------------------------------------------
+# ALWAYS VM-BOOT A CHANGE TO THIS FILE BEFORE WRITING IT TO HARDWARE.
+# A loop-mount proves the bytes are right, not that the thing boots. All three
+# failures above passed loop-mount inspection.
+# ===========================================================================
 
-# IMPORTANT, learned by building this twice:
-#
-# `minsize` here is REQUIRED (omitting it fails the build with "minsize is
-# required"), and bib does NOT treat it as "size of the whole VG". Measured
-# behaviour: the ROOT lv is given this value — its own minsize below is ignored
-# — every other LV gets its own minsize, and the VG ends up as the sum.
-#
-#   VG minsize 26 GiB + root 16 GiB + var 10 GiB  ->  root=26G var=10G VG=36G
-#   VG minsize 16 GiB + root 16 GiB + var 10 GiB  ->  root=16G var=10G VG=26G
-#
-# So set this to the size you want ROOT to be. Getting it wrong is not merely a
-# bigger disk.raw: XFS cannot shrink, so an oversized root LV is space that can
-# never be handed back to var.
+# /boot — MUST be declared explicitly and MUST be labelled "boot", because the
+# baked grub.cfg does `search --label boot`. bib only auto-creates this when
+# root is on an LV. 1 GiB matches the FCOS convention and the working install.
 [[customizations.disk.partitions]]
-type = "lvm"
-name = "vg4base"
-minsize = "16 GiB"
+type = "plain"
+label = "boot"
+mountpoint = "/boot"
+fs_type = "xfs"
+minsize = "1 GiB"
 
-# Root: ostree deployments only, once /var is split out. The whole system
-# currently uses 6.1 GiB including /var, so 16 GiB holds several deployments
-# plus rollback headroom comfortably.
-[[customizations.disk.partitions.logical_volumes]]
-name = "root"
-mountpoint = "/"
+# Root — plain, labelled "root", which is what the initramfs looks for. Carries
+# /var as well. 20 GiB matches the known-good image; it is the last partition,
+# so grow it into the target drive after install.
+[[customizations.disk.partitions]]
+type = "plain"
 label = "root"
+mountpoint = "/"
 fs_type = "xfs"
-minsize = "16 GiB"
-
-# /var: containers, quadlet state, appdata, Postgres, and the ZFS pool keyfile.
-# Small at install time on purpose — this is the LV to extend into the 4 TB.
-[[customizations.disk.partitions.logical_volumes]]
-name = "var"
-mountpoint = "/var"
-label = "var"
-fs_type = "xfs"
-minsize = "10 GiB"
+minsize = "20 GiB"
 
 [[customizations.user]]
 name = "developer"
