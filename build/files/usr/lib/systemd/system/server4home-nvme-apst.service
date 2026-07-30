@@ -1,0 +1,18 @@
+[Unit]
+Description=Apply NVMe APST workaround karg for INNOGRIT IG5236 controllers
+Documentation=https://github.com/dx4homelab/server4home
+# rpm-ostree kargs talks to rpm-ostreed over D-Bus, and the PCI sysfs tree must
+# be populated, so run once the basic system is up.
+After=basic.target dbus.service
+Wants=basic.target
+ConditionPathExists=/usr/libexec/server4home/nvme-apst-karg
+# Nothing to do in a container build or a live/installer environment.
+ConditionVirtualization=!container
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/libexec/server4home/nvme-apst-karg
+
+[Install]
+WantedBy=multi-user.target

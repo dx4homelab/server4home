@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+# Apply the NVMe APST workaround karg when an INNOGRIT IG5236 controller is present.
+#
+# Why
+# ---
+# IG5236 "RainierPC" drives (HP SSD FX900 Pro, Adata Legend 850 and other rebadges)
+# ship a faulty APST implementation. A few seconds after the drive goes idle it
+# enters its deepest power state and stops responding on the PCIe bus:
+#
+#   nvme nvmeN: controller is down; will reset: CSTS=0xffffffff, PCI_STATUS=0x10
+#   nvme nvmeN: Does your device have a faulty power saving mode enabled?
+#
+# On a host whose root filesystem lives on that drive, a reset that does not
+# recover takes the filesystem read-only. SMART stays clean throughout (0% used,
+# 0 media errors), so drive-health monitoring never warns. No firmware fix exists.
+#
+# Capping the allowed exit latency to 0 stops the kernel enabling APST for it.
+# Gated on the controller PCI ID so hosts without this silicon keep their NVMe
+# power savings.
+#
+# Layering
+# --------
+# This is the runtime half. Fresh installs also get the karg at install time from
+# iso/disk.toml ([customizations.kernel] append), which protects the very first
+# boot — this unit covers hosts installed before that, and any drive swapped in
+# later.
+
+set -euo pipefail
+
+KARG="nvme_core.default_ps_max_latency_us=0"
+IG5236_VENDOR="0x1dbe"
+IG5236_DEVICE="0x5236"
+STAMP="/var/lib/server4home/nvme-apst.attempted"
+
+log() { echo "nvme-apst-karg: $*"; }
+
+# Already active on this boot — nothing to do, and clear any previous attempt marker.
+if grep -qF -- "${KARG}" /proc/cmdline; then
+  log "karg already active on this boot"
+  rm -f "${STAMP}"
+  exit 0
+fi
+
+# Is the affected controller actually present?
+found=""
+for dev in /sys/bus/pci/devices/*; do
+  [ "$(cat "${dev}/vendor" 2>/dev/null)" = "${IG5236_VENDOR}" ] || continue
+  [ "$(cat "${dev}/device" 2>/dev/null)" = "${IG5236_DEVICE}" ] || continue
+  found="${dev##*/}"
+  break
+done
+
+if [ -z "${found}" ]; then
+  log "no INNOGRIT IG5236 controller present; nothing to do"
+  exit 0
+fi
+
+# Loop guard. If we staged the karg on an earlier boot and it is still not active,
+# something else is wrong (an older deployment was booted, the transaction was
+# rolled back, ...). Refusing here is much better than a reboot loop on a server.
+if [ -e "${STAMP}" ]; then
+  log "ERROR: karg was staged on a previous boot but is still not active."
+  log "ERROR: refusing to reboot again — inspect with: rpm-ostree kargs"
+  exit 1
+fi
+
+log "INNOGRIT IG5236 detected at ${found}; staging ${KARG}"
+mkdir -p "$(dirname "${STAMP}")"
+: > "${STAMP}"
+
+if ! rpm-ostree kargs --append-if-missing="${KARG}"; then
+  log "ERROR: rpm-ostree kargs failed; will retry on next boot"
+  rm -f "${STAMP}"
+  exit 1
+fi
+
+log "karg staged successfully; rebooting to activate"
+systemctl reboot

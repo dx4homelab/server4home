@@ -1,3 +1,19 @@
+# Install-time half of the INNOGRIT IG5236 APST workaround.
+#
+# IG5236 drives (HP SSD FX900 Pro and rebadges) drop off the PCIe bus a few
+# seconds after going idle; on a root-filesystem drive that takes the filesystem
+# read-only, and SMART never warns. Baking the karg into the disk image protects
+# a freshly dd'd system from its very first boot — the runtime unit
+# (server4home-nvme-apst.service) cannot act until the machine has already booted
+# at least once on the affected drive.
+#
+# Harmless on hosts without an IG5236: it only disables NVMe autonomous power
+# state transitions, costing a little idle power on a machine that is always on
+# anyway. Drop this block if the boot drive is not IG5236-based and you want
+# APST back — the runtime unit still covers the case if such a drive appears.
+[customizations.kernel]
+append = "nvme_core.default_ps_max_latency_us=0"
+
 [[customizations.filesystem]]
 mountpoint = "/"
 minsize = "20 GiB"
