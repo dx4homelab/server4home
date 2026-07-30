@@ -79,16 +79,50 @@ NUM="${ROOT##*[!0-9]}"
 FSTYPE="$(lsblk -pnro FSTYPE "${ROOT}")"
 [ "${FSTYPE}" = "xfs" ] || die "root filesystem is '${FSTYPE}', expected xfs"
 
-# The XFS is mounted at /sysroot on an ostree system; / is a composefs overlay
-# and is NOT growable, so resolve the real mountpoint rather than assuming "/".
+# Find a mountpoint backed by the root device that xfs_growfs can actually use.
+#
+# Two traps here, both found by VM-booting this:
+#   1. "/" is a composefs overlay on ostree, not XFS, so it cannot be grown.
+#   2. "/sysroot" IS the XFS — but ostree mounts it READ-ONLY, and xfs_growfs
+#      fails on a ro mount with:
+#         XFS_IOC_FSGROWFSDATA xfsctl failed: Read-only file system
+#      "/var" is a bind of the same filesystem and IS rw, and since growing is a
+#      superblock operation it grows the whole XFS regardless of which path is
+#      used. Verified: xfs_growfs -n reports the identical superblock for both.
+#
+# findmnt reports bind mounts as "/dev/xxx[/subdir]", so the [...] suffix has to
+# be stripped before comparing, or /var never matches.
 MP=""
-for cand in /sysroot /; do
-  if [ "$(findmnt -nro SOURCE --target "${cand}" 2>/dev/null)" = "${ROOT}" ]; then
-    MP="${cand}"
-    break
-  fi
+for cand in /var /sysroot /; do
+  src="$(findmnt -nro SOURCE --target "${cand}" 2>/dev/null || true)"
+  src="${src%%[*}"
+  [ "${src}" = "${ROOT}" ] || continue
+  findmnt -nro OPTIONS --target "${cand}" 2>/dev/null | grep -qE '(^|,)rw(,|$)' || continue
+  MP="${cand}"
+  break
 done
-[ -n "${MP}" ] || die "could not find the mountpoint backed by ${ROOT}"
+
+# Fallback: no writable mountpoint of the root filesystem. /sysroot is then
+# remounted rw only for the duration of the grow itself (see below), not for the
+# whole partitioning phase, and a trap restores ro even if this script dies.
+NEED_REMOUNT=0
+REMOUNTED_RW=0
+restore_ro() {
+  if [ "${REMOUNTED_RW}" -eq 1 ]; then
+    log "restoring /sysroot to read-only"
+    mount -o remount,ro /sysroot 2>/dev/null || log "WARNING: failed to restore /sysroot to ro"
+    REMOUNTED_RW=0
+  fi
+}
+trap restore_ro EXIT
+
+if [ -z "${MP}" ]; then
+  [ "$(findmnt -nro SOURCE --target /sysroot 2>/dev/null | sed 's/\[.*//')" = "${ROOT}" ] ||
+    die "no mountpoint backed by ${ROOT} that xfs_growfs can use"
+  log "no writable mountpoint backed by ${ROOT}; will briefly remount /sysroot rw to grow"
+  NEED_REMOUNT=1
+  MP="/sysroot"
+fi
 
 log "root=${ROOT} disk=${DISK} partnum=${NUM} mountpoint=${MP}"
 
@@ -162,8 +196,17 @@ fi
 [ "${rc}" -eq 2 ] && log "partition already at its maximum; nothing to grow"
 partprobe "${DISK}" 2>/dev/null || true
 
+if [ "${NEED_REMOUNT}" -eq 1 ]; then
+  mount -o remount,rw /sysroot || die "could not remount /sysroot rw to grow the filesystem"
+  REMOUNTED_RW=1
+fi
+
 log "growing the xfs filesystem at ${MP}"
 xfs_growfs "${MP}"
+
+# Put /sysroot back immediately rather than waiting for the EXIT trap, so the
+# window stays as short as possible.
+restore_ro
 
 # ---------------------------------------------------------------------------
 # Step 4 — initialise the app-data VG (empty; LVs come later, per app).
