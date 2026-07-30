@@ -1,0 +1,25 @@
+[Unit]
+Description=Grow root into the boot drive and create the app-data VG (first boot)
+Documentation=https://github.com/dx4homelab/server4home
+# Needs udev populated, the root filesystem mounted rw, and LVM tooling available.
+# basic.target covers all three; nothing here is boot-critical, so running late
+# is correct — a failure must degrade, not hang a headless server.
+After=basic.target
+Wants=basic.target
+ConditionPathExists=/usr/libexec/server4home/firstboot-grow
+# The stamp makes this a genuine one-shot across reboots.
+ConditionPathExists=!/var/lib/server4home/firstboot-grow.done
+# Nothing to grow in a container build.
+ConditionVirtualization=!container
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/libexec/server4home/firstboot-grow
+# Partition edits must not be interrupted part-way.
+TimeoutStartSec=600
+# Deliberately no Restart=: the script keeps its own attempt marker and refuses
+# to retry partition edits unattended. A failure should be looked at, not looped.
+
+[Install]
+WantedBy=multi-user.target

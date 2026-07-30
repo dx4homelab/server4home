@@ -1,0 +1,17 @@
+# Target size for the root partition, applied once on first boot by
+# server4home-firstboot-grow.service.
+#
+# The disk image ships a small (20 GiB) root so `dd` stays fast; this is the size
+# root is grown to on the real hardware. Whatever is left over becomes an LVM PV
+# and an empty VG named vg4data, for app data (see docs/storage-build-resume.md).
+#
+# Accepts IEC sizes: 250G, 512G, 1T, ...
+# The literal value "max" grows root over the entire disk and creates no VG.
+#
+# To change it for a given host, edit this file BEFORE the first boot (loop-mount
+# the raw, or write it during provisioning). After the grow has run the stamp at
+# /var/lib/server4home/firstboot-grow.done makes this file inert — root cannot be
+# shrunk afterwards, since XFS only grows.
+#
+# Comments and blank lines are ignored; the first real line is used.
+250G
