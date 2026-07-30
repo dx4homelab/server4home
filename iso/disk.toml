@@ -98,8 +98,21 @@ fs_type = "xfs"
 minsize = "1 GiB"
 
 # Root — plain, labelled "root", which is what the initramfs looks for. Carries
-# /var as well. 20 GiB matches the known-good image; it is the last partition,
-# so grow it into the target drive after install.
+# /var as well.
+#
+# Deliberately left at 20 GiB rather than the final size. The raw is sparse
+# (~5 GB actual for a 22 GiB apparent file), but `dd` writes the *apparent* size,
+# so baking a 250 GiB root would push a quarter-terabyte of mostly zeros onto
+# every target drive. Instead root is grown on the real hardware by
+# server4home-firstboot-grow.service, which also knows how big the drive actually
+# is — so one image fits any boot drive size.
+#
+# Root must stay the LAST declared partition: the first-boot unit bounds its
+# growth by creating the app-data partition after it, then lets growpart fill the
+# gap, so root's own entry is never rewritten by hand.
+#
+# Target size comes from /etc/server4home/root-size (default 250G, "max" = whole
+# disk). See build/files/usr/libexec/server4home/firstboot-grow.
 [[customizations.disk.partitions]]
 type = "plain"
 label = "root"

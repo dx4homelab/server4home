@@ -1,5 +1,8 @@
 export image_name := env("IMAGE_NAME", "server4home")
 export default_tag := env("DEFAULT_TAG", "stable")
+# Registry the published, signed images live in. Used by build-raw-ghcr so a disk
+# image written to real hardware gets an origin that can actually be updated.
+export registry := env("REGISTRY", "ghcr.io/dx4homelab")
 export bib_image := env("BIB_IMAGE", "quay.io/centos-bootc/bootc-image-builder:latest@sha256:903c01d110b8533f8891f07c69c0ba2377f8d4bc7e963311082b7028c04d529d")
 
 alias build-vm := build-qcow2
@@ -333,6 +336,24 @@ build-qcow2 $target_image=("localhost/" + image_name) $tag=default_tag: && (_bui
 # Build a RAW virtual machine image
 [group('Build Virtal Machine Image')]
 build-raw $target_image=("localhost/" + image_name) $tag=default_tag: && (_build-bib target_image tag "raw" "iso/disk.toml")
+
+# Build a RAW disk image FOR REAL HARDWARE, from the published signed registry image.
+#
+# Use this — not `build-raw` — for anything you intend to dd onto a machine.
+# bib bakes the image reference it was given as the installed system's ostree
+# origin. Building from `localhost/server4home` therefore produces a host whose
+# origin is `ostree-image-signed:docker://localhost/server4home:stable`, which no
+# amount of enabling rpm-ostreed-automatic.timer can ever update: there is no
+# such registry to pull from. Building from the ghcr reference bakes
+# `ostree-image-signed:docker://ghcr.io/dx4homelab/server4home:stable` instead,
+# so the machine is self-updating from first boot and needs no post-install rebase.
+#
+# _rootful_load_image pulls the reference when it is not present locally, so this
+# works from a clean checkout.
+
+# Build a RAW disk image for real hardware (signed registry origin, self-updating)
+[group('Build Virtal Machine Image')]
+build-raw-ghcr $tag=default_tag: && (_build-bib (registry + "/" + image_name) tag "raw" "iso/disk.toml")
 
 # Build the base ("plain" / storage) installer ISO — non-LVM, no K3s rebase
 [group('Build Virtal Machine Image')]

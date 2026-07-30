@@ -1,0 +1,192 @@
+#!/usr/bin/env bash
+# Grow root into the target drive on first boot, and hand the remainder to an
+# LVM PV for app data.
+#
+# Why this exists
+# ---------------
+# The disk image ships a deliberately small root (20 GiB) so the raw stays quick
+# to write — a 250 GiB root would make `dd` push a quarter-terabyte of zeros on
+# every install. The real sizing therefore has to happen on the target hardware,
+# which is also the only place that knows how big the drive actually is. Doing it
+# here rather than by hand means a freshly dd'd server reaches its final layout
+# unattended, and the same image works on any boot drive size.
+#
+# What it does
+# ------------
+#   1. sgdisk -e   — relocate the backup GPT header to the true end of the disk.
+#                    A small image written to a big drive always leaves the GPT
+#                    describing the *image's* size, so until this runs there is
+#                    literally no free space to grow into.
+#   2. create the app-data partition at the point where root should stop, which
+#      bounds root's growth to the target size. growpart then fills exactly the
+#      gap — root is never rewritten by hand.
+#   3. growpart + xfs_growfs to expand root online.
+#   4. pvcreate/vgcreate the app-data partition (empty VG; LVs are created later
+#      per app — see docs/storage-build-resume.md).
+#
+# Sizing
+# ------
+# Target root size is read from /etc/server4home/root-size, e.g. "250G", "1T".
+# The literal value "max" grows root over the whole disk and creates no VG.
+# If the drive is too small for the target, or the leftover would be under
+# MIN_VG, root simply takes the whole disk and no VG is created.
+#
+# Why no LVM for root itself: FCOS/uCore cannot boot a root/boot/var on LVM —
+# the initramfs has no LVM support at all. See iso/disk.toml for the three
+# documented failure modes. LVM is only safe for storage mounted late, which is
+# exactly what the app-data VG is.
+
+set -euo pipefail
+
+CONF="/etc/server4home/root-size"
+DEFAULT_TARGET="250G"
+VG_NAME="vg4data"
+# Not worth carving a VG out of scraps; below this root just takes everything.
+MIN_VG_BYTES=$((50 * 1024 * 1024 * 1024))
+STAMP="/var/lib/server4home/firstboot-grow.done"
+ATTEMPT="/var/lib/server4home/firstboot-grow.attempted"
+
+log() { echo "firstboot-grow: $*"; }
+die() { log "ERROR: $*"; exit 1; }
+
+if [ -e "${STAMP}" ]; then
+  log "already completed on an earlier boot; nothing to do"
+  exit 0
+fi
+
+# Loop guard. If a previous boot got part-way and failed, do not keep retrying
+# partition edits unattended on a server — surface it and stop.
+if [ -e "${ATTEMPT}" ]; then
+  die "a previous attempt did not complete. Refusing to retry partition edits
+       automatically. Inspect the disk, then remove ${ATTEMPT} to allow a retry."
+fi
+
+# ---------------------------------------------------------------------------
+# Locate root by filesystem LABEL, never by a hardcoded /dev/nvme0n1 — kernel
+# NVMe enumeration is not stable across reboots.
+# ---------------------------------------------------------------------------
+ROOT="$(lsblk -pnro NAME,LABEL | awk '$2=="root"{print $1; exit}')"
+[ -n "${ROOT}" ] || die "no partition with filesystem label 'root' found"
+[ -b "${ROOT}" ] || die "${ROOT} is not a block device"
+
+DISK="$(lsblk -pnro PKNAME "${ROOT}" | head -1)"
+[ -n "${DISK}" ] && [ -b "${DISK}" ] || die "could not derive parent disk of ${ROOT}"
+
+NUM="${ROOT##*[!0-9]}"
+[ -n "${NUM}" ] || die "could not derive partition number from ${ROOT}"
+
+# Only XFS can be grown by this script, and only forward.
+FSTYPE="$(lsblk -pnro FSTYPE "${ROOT}")"
+[ "${FSTYPE}" = "xfs" ] || die "root filesystem is '${FSTYPE}', expected xfs"
+
+# The XFS is mounted at /sysroot on an ostree system; / is a composefs overlay
+# and is NOT growable, so resolve the real mountpoint rather than assuming "/".
+MP=""
+for cand in /sysroot /; do
+  if [ "$(findmnt -nro SOURCE --target "${cand}" 2>/dev/null)" = "${ROOT}" ]; then
+    MP="${cand}"
+    break
+  fi
+done
+[ -n "${MP}" ] || die "could not find the mountpoint backed by ${ROOT}"
+
+log "root=${ROOT} disk=${DISK} partnum=${NUM} mountpoint=${MP}"
+
+# ---------------------------------------------------------------------------
+# Step 1 — make the whole drive visible to the GPT.
+# ---------------------------------------------------------------------------
+mkdir -p "$(dirname "${ATTEMPT}")"
+: >"${ATTEMPT}"
+
+log "relocating backup GPT header to the end of ${DISK}"
+sgdisk -e "${DISK}"
+partprobe "${DISK}" 2>/dev/null || true
+
+SS="$(blockdev --getss "${DISK}")"
+ROOT_START="$(sgdisk -i "${NUM}" "${DISK}" | awk '/^First sector/{print $3}')"
+LAST_USABLE="$(sgdisk -p "${DISK}" | awk '/last usable sector/{print $NF}')"
+[ -n "${SS}" ] && [ -n "${ROOT_START}" ] && [ -n "${LAST_USABLE}" ] ||
+  die "could not read disk geometry (ss=${SS} start=${ROOT_START} last=${LAST_USABLE})"
+
+log "sector size=${SS} root start=${ROOT_START} last usable=${LAST_USABLE}"
+
+# ---------------------------------------------------------------------------
+# Step 2 — decide where root should stop, and bound it with the VG partition.
+# ---------------------------------------------------------------------------
+TARGET="${DEFAULT_TARGET}"
+if [ -r "${CONF}" ]; then
+  # First non-comment, non-blank line wins, so the shipped file can document itself.
+  CONF_VAL="$(sed -e 's/#.*//' -e 's/[[:space:]]//g' "${CONF}" | grep -m1 . || true)"
+  [ -n "${CONF_VAL}" ] && TARGET="${CONF_VAL}"
+fi
+log "target root size: ${TARGET} (from ${CONF} if present, else default)"
+
+make_vg=0
+if [ "${TARGET}" = "max" ]; then
+  log "target is 'max' — root takes the whole disk, no ${VG_NAME}"
+else
+  TARGET_BYTES="$(numfmt --from=iec "${TARGET}" 2>/dev/null)" ||
+    die "could not parse target size '${TARGET}' (expected e.g. 250G, 1T, or max)"
+  TARGET_SECTORS=$((TARGET_BYTES / SS))
+  # Align the next partition start to 2048 sectors (1 MiB) — root ends just before it.
+  NEXT_START=$(((ROOT_START + TARGET_SECTORS + 2047) / 2048 * 2048))
+
+  if [ "${NEXT_START}" -ge "${LAST_USABLE}" ]; then
+    log "drive is too small for a ${TARGET} root plus a VG — root takes the whole disk"
+  else
+    REMAIN_BYTES=$(((LAST_USABLE - NEXT_START + 1) * SS))
+    if [ "${REMAIN_BYTES}" -lt "${MIN_VG_BYTES}" ]; then
+      log "only $((REMAIN_BYTES / 1024 / 1024 / 1024))G would remain, under the"
+      log "$((MIN_VG_BYTES / 1024 / 1024 / 1024))G minimum — root takes the whole disk"
+    elif [ -n "$(sgdisk -p "${DISK}" | awk -v n="${NUM}" '$1 ~ /^[0-9]+$/ && $1+0 > n+0 {print $1; exit}')" ]; then
+      log "a partition already exists after root — leaving it alone, not creating ${VG_NAME}"
+    else
+      log "creating ${VG_NAME} partition at sector ${NEXT_START} (bounds root to ~${TARGET})"
+      sgdisk -n "0:${NEXT_START}:0" -t "0:8e00" -c "0:${VG_NAME}" "${DISK}"
+      partprobe "${DISK}" 2>/dev/null || true
+      make_vg=1
+    fi
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+# Step 3 — grow root into whatever space is now available before the next partition.
+# ---------------------------------------------------------------------------
+log "growing partition ${NUM} on ${DISK}"
+rc=0
+growpart "${DISK}" "${NUM}" || rc=$?
+# growpart: 0 = resized, 2 = nothing to do. Anything else is a real failure.
+if [ "${rc}" -ne 0 ] && [ "${rc}" -ne 2 ]; then
+  die "growpart failed with exit code ${rc}"
+fi
+[ "${rc}" -eq 2 ] && log "partition already at its maximum; nothing to grow"
+partprobe "${DISK}" 2>/dev/null || true
+
+log "growing the xfs filesystem at ${MP}"
+xfs_growfs "${MP}"
+
+# ---------------------------------------------------------------------------
+# Step 4 — initialise the app-data VG (empty; LVs come later, per app).
+# ---------------------------------------------------------------------------
+if [ "${make_vg}" -eq 1 ]; then
+  VGPART="$(lsblk -pnro NAME,PARTLABEL "${DISK}" | awk -v l="${VG_NAME}" '$2==l{print $1; exit}')"
+  if [ -n "${VGPART}" ] && [ -b "${VGPART}" ]; then
+    if pvs "${VGPART}" >/dev/null 2>&1; then
+      log "${VGPART} is already a PV; leaving it alone"
+    else
+      log "initialising ${VGPART} as PV and creating VG ${VG_NAME}"
+      pvcreate "${VGPART}"
+      vgcreate "${VG_NAME}" "${VGPART}"
+    fi
+  else
+    log "WARNING: could not locate the ${VG_NAME} partition after partprobe;"
+    log "WARNING: create the PV/VG by hand (see docs/storage-build-resume.md)"
+  fi
+fi
+
+log "final layout:"
+lsblk -o NAME,SIZE,FSTYPE,PARTLABEL,MOUNTPOINT "${DISK}" || true
+
+: >"${STAMP}"
+rm -f "${ATTEMPT}"
+log "complete"
