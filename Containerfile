@@ -58,7 +58,7 @@ COPY --from=ghcr.io/ublue-os/brew:latest@sha256:ca91068f51ce663d495ccfc829352d66
 # a pool problem appears you need to know exactly which base moved and when.
 # Renovate bumps the digest automatically (packageRules -> matchManagers:
 # dockerfile, matchUpdateTypes: digest, automerge: true).
-FROM ghcr.io/ublue-os/ucore-hci:latest@sha256:d2464da655fe4e41a0c667573f1cd47abb63c7ab99cb845288a150f2c7f241a9
+FROM ghcr.io/ublue-os/ucore-hci:latest@sha256:0a2f69ce7cdb3f06f03d86032c9efd84ab1e97be114de82e88c4a743e7c9d16c
 
 ## Alternative uCore variants (uncomment to use):
 # FROM ghcr.io/ublue-os/ucore-minimal:latest      (lightweight container host, essentials only)
