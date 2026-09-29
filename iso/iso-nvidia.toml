@@ -1,0 +1,167 @@
+# NVIDIA ("AI box") installer ISO configuration.
+#
+# Installs server4home-nvidia (ucore-hci:stable-nvidia base: NVIDIA open kernel
+# modules + nvidia-container-toolkit/CDI, plus everything in the plain image)
+# onto ONE disk chosen at install time. Build with: just build-iso-nvidia
+#
+# TARGET DISK — chosen at install time, never hardcoded
+# -----------------------------------------------------
+# NVMe enumeration is not stable across boots (nvme0/nvme1 swapped on fury4dx in
+# a single reboot), so a fixed --drives=nvme0n1 can wipe the wrong drive. The
+# %pre script below lists every disk except the installer media, then asks for
+# the number AND the device name typed back before anything is written. Typing
+# q aborts the install before any disk is touched.
+#
+# Unattended: boot with s4h.disk=<name> on the kernel command line (e.g.
+# s4h.disk=nvme1n1 or s4h.disk=/dev/disk/by-id/nvme-<model>_<serial>) to skip
+# the prompt. An s4h.disk= that does not name a listed disk stops the install.
+#
+# LAYOUT — the same as iso/disk.toml, not Anaconda autopart
+# ---------------------------------------------------------
+#   EFI (reqpart) | /boot xfs 1 GiB label=boot | / xfs 20 GiB label=root, LAST
+# Root is left small on purpose: server4home-firstboot-grow.service finds it by
+# LABEL=root, grows it to /etc/server4home/root-size (250G by default) and puts
+# the rest of the disk into the app-data VG vg4data — exactly what a dd'd raw
+# gets. Anaconda's autopart would fill the disk and give no labels, and the
+# grow service would then fail on first boot. No LVM in the boot path: the
+# uCore initramfs cannot assemble it (see iso/disk.toml).
+#
+# ACCOUNT — the same as iso/disk.toml
+# -----------------------------------
+# developer (wheel, passwordless sudo) with the SSH key from disk.toml. No
+# password is set; one can still be added on Anaconda's user screen if console
+# login is wanted. root is locked.
+#
+# ORIGIN — %post points the installed system at the signed registry image, so
+# rpm-ostreed-automatic keeps it updated from ghcr.io/dx4homelab and signatures
+# are enforced, even when the ISO was built from localhost/server4home-nvidia.
+#
+# SECURE BOOT — the nvidia and zfs kmods are signed with the ublue akmods key,
+# not a Microsoft-trusted one. Either turn Secure Boot off in BIOS, or enroll
+# /etc/pki/akmods/certs/akmods-ublue.der with mokutil after install.
+
+[customizations.installer.kickstart]
+# TOML literal string (''') — no backslash escapes, the scripts go through as-is.
+contents = '''
+# --- disk: written by %pre below ---
+%include /tmp/s4h-disk.ks
+
+# --- account ---
+user --name=developer --groups=wheel
+sshkey --username=developer "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAjwQ7tNZyJiLYde7ZMtNvkVvJUhLd7JAwm5SDckkmAo developer@bluefin"
+rootpw --lock
+
+%pre --interpreter=/usr/bin/bash --erroronfail
+set -uo pipefail
+
+KS=/tmp/s4h-disk.ks
+TTY=/dev/tty8
+
+# Candidate disks: whole disks, minus zram and minus anything carrying an
+# iso9660 filesystem (the USB stick / CD this installer booted from).
+cands=()
+while read -r dev type; do
+  [ "$type" = disk ] || continue
+  case "$dev" in /dev/zram*) continue ;; esac
+  lsblk -nro FSTYPE "$dev" 2>/dev/null | grep -qx iso9660 && continue
+  cands+=("$dev")
+done < <(lsblk -dnpo NAME,TYPE)
+
+write_ks() {
+  local name="${1#/dev/}"
+  cat >"$KS" <<EOF
+ignoredisk --only-use=${name}
+zerombr
+clearpart --all --initlabel --disklabel=gpt --drives=${name}
+reqpart
+part /boot --fstype=xfs --size=1024 --label=boot --ondisk=${name}
+part / --fstype=xfs --size=20480 --label=root --ondisk=${name}
+EOF
+  echo "s4h-disk: target ${1}" >&2
+  cat "$KS" >&2
+}
+
+is_cand() {
+  local c
+  for c in "${cands[@]}"; do [ "$c" = "$1" ] && return 0; done
+  return 1
+}
+
+# Unattended path: s4h.disk=<name|/dev/...|/dev/disk/by-id/...>
+want="$(tr ' ' '\n' </proc/cmdline | sed -n 's/^s4h\.disk=//p' | tail -1)"
+if [ -n "$want" ]; then
+  case "$want" in /*) ;; *) want="/dev/$want" ;; esac
+  dev="$(readlink -f "$want" 2>/dev/null || true)"
+  if [ -n "$dev" ] && is_cand "$dev"; then
+    write_ks "$dev"
+    exit 0
+  fi
+  echo "s4h-disk: s4h.disk=${want} is not an installable disk (candidates: ${cands[*]:-none})" >&2
+  exit 1
+fi
+
+# Interactive path, on its own VT so it cannot collide with Anaconda's UI.
+exec <"$TTY" >"$TTY" 2>&1
+command -v chvt >/dev/null && chvt 8
+
+echo
+echo "=================== server4home-nvidia installer ==================="
+echo " Pick the disk to install on. EVERYTHING on it will be erased."
+echo "===================================================================="
+if [ "${#cands[@]}" -eq 0 ]; then
+  echo "No installable disk found. Aborting."
+  sleep 30
+  exit 1
+fi
+i=0
+for dev in "${cands[@]}"; do
+  i=$((i + 1))
+  echo
+  printf ' [%d] %s  %s\n' "$i" "$dev" "$(lsblk -dno SIZE,TRAN,MODEL,SERIAL "$dev" | tr -s ' ')"
+  lsblk -no NAME,SIZE,FSTYPE,LABEL "$dev" | tail -n +2 | sed 's/^/        /'
+done
+echo
+
+while :; do
+  read -r -p "Disk number (q = abort, nothing is written): " n
+  [ "$n" = q ] && { echo "Aborted."; sleep 3; exit 1; }
+  [[ "$n" =~ ^[0-9]+$ ]] && [ "$n" -ge 1 ] && [ "$n" -le "${#cands[@]}" ] || continue
+  dev="${cands[$((n - 1))]}"
+  read -r -p "Type '${dev#/dev/}' to ERASE ${dev} and install: " confirm
+  [ "$confirm" = "${dev#/dev/}" ] && break
+  echo "Did not match — nothing selected."
+done
+
+write_ks "$dev"
+echo "Installing to ${dev}. Returning to the installer..."
+sleep 2
+command -v chvt >/dev/null && chvt 1
+exit 0
+%end
+
+%post --erroronfail
+set -eux
+# Registry origin with signature enforcement (see header). --mutate-in-place
+# rewrites the origin of the deployment just installed; nothing is pulled here.
+bootc switch --mutate-in-place --enforce-container-sigpolicy --transport registry ghcr.io/dx4homelab/server4home-nvidia:stable
+# Passwordless sudo for wheel, as in iso/disk.toml.
+printf '%%wheel ALL=(ALL) NOPASSWD: ALL\n' >/etc/sudoers.d/wheel-nopasswd
+chmod 0440 /etc/sudoers.d/wheel-nopasswd
+%end
+'''
+
+[customizations.installer.modules]
+# Storage is driven by the %pre-generated kickstart above; the remaining
+# screens (language, timezone, network, user password) stay guided.
+enable = [
+  "org.fedoraproject.Anaconda.Modules.Storage",
+  "org.fedoraproject.Anaconda.Modules.Runtime",
+  "org.fedoraproject.Anaconda.Modules.Network",
+  "org.fedoraproject.Anaconda.Modules.Security",
+  "org.fedoraproject.Anaconda.Modules.Services",
+  "org.fedoraproject.Anaconda.Modules.Users",
+  "org.fedoraproject.Anaconda.Modules.Timezone",
+]
+disable = [
+  "org.fedoraproject.Anaconda.Modules.Subscription",
+]

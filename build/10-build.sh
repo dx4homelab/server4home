@@ -93,7 +93,8 @@ rule = [{
     "signedIdentity": {"type": "matchRepository"},
 }]
 docker = policy.setdefault("transports", {}).setdefault("docker", {})
-for repo in ("ghcr.io/dx4homelab/server4home", "ghcr.io/dx4homelab/server4home-k3s"):
+for repo in ("ghcr.io/dx4homelab/server4home", "ghcr.io/dx4homelab/server4home-k3s",
+             "ghcr.io/dx4homelab/server4home-nvidia"):
     docker[repo] = rule
 with open(path, "w") as f:
     json.dump(policy, f, indent=4)

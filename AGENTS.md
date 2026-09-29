@@ -521,6 +521,7 @@ Branch=stable
 - `iso/disk.toml` - VM images (QCOW2/RAW): `just build-qcow2`
 - `iso/iso-plain.toml` - Base/storage installer ISO (non-LVM, no rebase): `just build-iso-plain`
 - `iso/iso-k3s.toml` - K3s installer ISO (rebases to `-k3s` on first boot): `just build-iso-k3s`
+- `iso/iso-nvidia.toml` - NVIDIA-flavor installer ISO (interactive disk picker, disk.toml layout, signed ghcr origin): `just build-iso-nvidia`
 
 **CRITICAL** - Update bootc switch URL in `iso/iso-k3s.toml`:
 ```toml
