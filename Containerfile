@@ -72,7 +72,7 @@ FROM ghcr.io/ublue-os/ucore-hci:latest@sha256:d2464da655fe4e41a0c667573f1cd47abb
 # kernel as the plain tag. Pinned by digest for the same reason as above;
 # Renovate bumps every FROM line, named stage or not. Only the stage selected
 # by BASE_FLAVOR is pulled (unused stages are skipped).
-FROM ghcr.io/ublue-os/ucore-hci:stable-nvidia@sha256:d395d4b747c163dd02fe93f152a0b6f93c2e02df6955997653056e8456e59b5c AS base-nvidia
+FROM ghcr.io/ublue-os/ucore-hci:stable-nvidia@sha256:d064fc72f8455337de73b9af3c6126b1509384672cc7456e18294d257ce5b9bc AS base-nvidia
 
 FROM base-${BASE_FLAVOR}
 
