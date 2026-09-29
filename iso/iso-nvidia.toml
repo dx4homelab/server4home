@@ -46,6 +46,17 @@ contents = '''
 # --- disk: written by %pre below ---
 %include /tmp/s4h-disk.ks
 
+# --- locale / time / finish ---
+# The GUI installer treats time zone as mandatory: without these it stops on
+# the hub for a time-zone pick and a "Begin Installation" click (seen on the
+# first ProArt install, 2026-09-28). With them the disk prompt is the only
+# interaction. reboot: unmount cleanly and boot the new system — Anaconda puts
+# its UEFI boot entry first, so the USB stick is not booted again.
+lang en_US.UTF-8
+keyboard us
+timezone America/Denver --utc
+reboot
+
 # --- account ---
 user --name=developer --groups=wheel
 sshkey --username=developer "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAjwQ7tNZyJiLYde7ZMtNvkVvJUhLd7JAwm5SDckkmAo developer@bluefin"
@@ -151,8 +162,8 @@ chmod 0440 /etc/sudoers.d/wheel-nopasswd
 '''
 
 [customizations.installer.modules]
-# Storage is driven by the %pre-generated kickstart above; the remaining
-# screens (language, timezone, network, user password) stay guided.
+# Every mandatory screen is answered by the kickstart above, so these modules
+# only back the (skipped) UI; the network defaults to DHCP on all NICs.
 enable = [
   "org.fedoraproject.Anaconda.Modules.Storage",
   "org.fedoraproject.Anaconda.Modules.Runtime",
