@@ -191,6 +191,11 @@ jobs:
       - name: ZFS smoke test
         run: ./tools/scripts/smoke-test-zfs.sh "${{ env.FLAVOR_IMAGE }}:${{ env.DEFAULT_TAG }}"
 
+      # ISO installs run `systemctl preset-all`; fail if that would change
+      # which units are enabled (see build/files/.../10-server4home.preset).
+      - name: Preset drift test
+        run: ./tools/scripts/smoke-test-presets.sh "${{ env.FLAVOR_IMAGE }}:${{ env.DEFAULT_TAG }}"
+
       # Same failure class as ZFS: the NVIDIA kmod is built out-of-tree against
       # one kernel, and a mismatch only shows when the GPU box reboots.
       - name: NVIDIA smoke test
