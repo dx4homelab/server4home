@@ -1,0 +1,30 @@
+# Unit enablement as the image ships it, restated as presets.
+#
+# Anaconda runs `systemctl preset-all` on every ISO install, which throws away
+# the enablement the image carries and re-derives it from presets alone. On the
+# base presets (40-coreos enables zincati, 99-default-disable disables
+# everything unlisted) that silently:
+#   - enables zincati (restart-loops forever: "failed to build default
+#     identity" — updates come from rpm-ostreed-automatic, not Zincati),
+#     docker.socket and tuned, all disabled in the image;
+#   - disables podman.socket (enabled by build/10-build.sh),
+#     nvidia-persistenced, ucore-paths-provision, gssproxy-workaround and
+#     rpm-ostreed-automatic.timer, all enabled in the image.
+# Found on the first ISO install (ProArt AI box, 2026-09-28). dd'd raw images
+# never run preset-all, which is why z170asrock never showed it.
+#
+# 10- sorts before every base preset file, and the first match wins.
+# tools/scripts/smoke-test-presets.sh fails CI if preset-all would still change
+# anything, so a new base-image service shows up there instead of on hardware.
+# Lines for units a flavor does not ship (nvidia-* on plain) are ignored.
+
+enable podman.socket
+enable rpm-ostreed-automatic.timer
+enable ucore-paths-provision.service
+enable gssproxy-workaround.service
+enable nvidia-persistenced.service
+enable swtpm-workaround.service
+
+disable zincati.service
+disable docker.socket
+disable tuned.service
