@@ -37,6 +37,12 @@
 # See: https://docs.projectbluefin.io/contributing/ for architecture diagram
 ###############################################################################
 
+# Base flavor: "plain" (ucore-hci, the storage/general image published as
+# server4home) or "nvidia" (ucore-hci with the NVIDIA open kernel modules and
+# nvidia-container-toolkit, published as server4home-nvidia — the AI GPU box).
+# Must be declared before the first FROM to be usable in a FROM line.
+ARG BASE_FLAVOR=plain
+
 # Context stage - combine local and imported OCI container resources
 FROM scratch AS ctx
 
@@ -58,7 +64,17 @@ COPY --from=ghcr.io/ublue-os/brew:latest@sha256:ca91068f51ce663d495ccfc829352d66
 # a pool problem appears you need to know exactly which base moved and when.
 # Renovate bumps the digest automatically (packageRules -> matchManagers:
 # dockerfile, matchUpdateTypes: digest, automerge: true).
-FROM ghcr.io/ublue-os/ucore-hci:latest@sha256:d2464da655fe4e41a0c667573f1cd47abb63c7ab99cb845288a150f2c7f241a9
+FROM ghcr.io/ublue-os/ucore-hci:latest@sha256:d2464da655fe4e41a0c667573f1cd47abb63c7ab99cb845288a150f2c7f241a9 AS base-plain
+
+# NVIDIA flavor base. uCore's `nvidia` tag ships the OPEN kernel modules (the
+# only ones Blackwell / RTX 50xx supports), nvidia-container-toolkit with the
+# nvidia-cdi-refresh units, a nouveau blacklist, and the same ZFS kmods and
+# kernel as the plain tag. Pinned by digest for the same reason as above;
+# Renovate bumps every FROM line, named stage or not. Only the stage selected
+# by BASE_FLAVOR is pulled (unused stages are skipped).
+FROM ghcr.io/ublue-os/ucore-hci:stable-nvidia@sha256:d395d4b747c163dd02fe93f152a0b6f93c2e02df6955997653056e8456e59b5c AS base-nvidia
+
+FROM base-${BASE_FLAVOR}
 
 ## Alternative uCore variants (uncomment to use):
 # FROM ghcr.io/ublue-os/ucore-minimal:latest      (lightweight container host, essentials only)

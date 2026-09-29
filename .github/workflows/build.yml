@@ -1,10 +1,12 @@
 ---
-# Single-job sequential build: base + K3s share local containers-storage so
-# the K3s `FROM ${BASE_IMAGE}` resolves without a registry round-trip. This
-# shape is the right answer for 2 images with a parent-child relationship.
+# Matrix over base flavors, one runner per row:
+#   plain  -> server4home (+ server4home-k3s, built FROM it in the same row so
+#             the K3s `FROM ${BASE_IMAGE}` resolves from local containers-storage
+#             without a registry round-trip)
+#   nvidia -> server4home-nvidia (same Containerfile, BASE_FLAVOR=nvidia)
 #
-# When you add a third leaf flavor (RKE2, MicroK8s, multi-arch, alternate
-# kernel streams, …), refactor to two jobs:
+# When K3s-style leaf flavors multiply (RKE2, MicroK8s, multi-arch, …),
+# split the leaves out into their own job:
 #   1) build_base  (one runner, pushes by digest)
 #   2) build_variants  (matrix over flavors, pins base by @digest)
 # Full copy-paste-ready recipe + pitfalls:
@@ -37,8 +39,24 @@ concurrency:
 
 jobs:
   build_push:
-    name: Build and push image
+    name: Build and push ${{ matrix.flavor }}
     runs-on: ubuntu-24.04
+
+    # One row per base flavor. The rows share nothing (different FROM), so they
+    # run on separate runners in parallel. K3s is built FROM the plain image, so
+    # it stays inside the plain row, sequential, as before.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - flavor: plain
+            image_suffix: ""
+            desc_suffix: ""
+            k3s: true
+          - flavor: nvidia
+            image_suffix: "-nvidia"
+            desc_suffix: " (NVIDIA flavor)"
+            k3s: false
 
     permissions:
       contents: read
@@ -51,6 +69,9 @@ jobs:
           # Lowercase the image uri
           echo "IMAGE_REGISTRY=${IMAGE_REGISTRY,,}" >> ${GITHUB_ENV}
           echo "IMAGE_NAME=${IMAGE_NAME,,}" >> ${GITHUB_ENV}
+          # Published name of this row's image: server4home or server4home-nvidia.
+          # IMAGE_NAME stays the repo name — the labels use it for repo URLs.
+          echo "FLAVOR_IMAGE=${IMAGE_NAME,,}${{ matrix.image_suffix }}" >> ${GITHUB_ENV}
 
       # These stage versions are pinned by https://github.com/renovatebot/renovate
       - name: Checkout
@@ -99,10 +120,10 @@ jobs:
           labels: |
             io.artifacthub.package.readme-url=https://raw.githubusercontent.com/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}/${{ github.sha }}/README.md
             org.opencontainers.image.created=${{ steps.date.outputs.date }}
-            org.opencontainers.image.description=${{ env.IMAGE_DESC }}
+            org.opencontainers.image.description=${{ env.IMAGE_DESC }}${{ matrix.desc_suffix }}
             org.opencontainers.image.documentation=https://raw.githubusercontent.com/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}/${{ github.sha }}/README.md
             org.opencontainers.image.source=https://github.com/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}/blob/${{ github.sha }}/Containerfile
-            org.opencontainers.image.title=${{ env.IMAGE_NAME }}
+            org.opencontainers.image.title=${{ env.FLAVOR_IMAGE }}
             org.opencontainers.image.url=https://github.com/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}/tree/${{ github.sha }}
             org.opencontainers.image.vendor=${{ github.repository_owner }}
             org.opencontainers.image.version=${{ env.DEFAULT_TAG }}.{{date 'YYYYMMDD'}}
@@ -119,6 +140,7 @@ jobs:
       # the K3s flavor so downstream tools (ArtifactHub, OCI inspectors,
       # `bootc status`) report the correct image identity.
       - name: Image Metadata (K3s)
+        if: matrix.k3s
         uses: docker/metadata-action@c1e51972afc2121e065aed6d45c65596fe445f3f # v5
         id: metadata_k3s
         with:
@@ -153,11 +175,11 @@ jobs:
         with:
           containerfiles: |
             ./Containerfile
-          # Postfix image name with -custom to make it a little more descriptive
-          # Syntax: https://docs.github.com/en/actions/learn-github-actions/expressions#format
-          image: ${{ env.IMAGE_NAME }}
+          image: ${{ env.FLAVOR_IMAGE }}
           tags: ${{ env.DEFAULT_TAG }}
           labels: ${{ steps.metadata.outputs.labels }}
+          build-args: |
+            BASE_FLAVOR=${{ matrix.flavor }}
           oci: false
 
       # Gate before tagging/pushing: confirm the image's ZFS kmod matches its own
@@ -167,13 +189,19 @@ jobs:
       # the storage server reboots and the pool will not import. Only the base is
       # checked — the K3s flavor is built FROM it and inherits the same modules.
       - name: ZFS smoke test
-        run: ./tools/scripts/smoke-test-zfs.sh "${{ env.IMAGE_NAME }}:${{ env.DEFAULT_TAG }}"
+        run: ./tools/scripts/smoke-test-zfs.sh "${{ env.FLAVOR_IMAGE }}:${{ env.DEFAULT_TAG }}"
+
+      # Same failure class as ZFS: the NVIDIA kmod is built out-of-tree against
+      # one kernel, and a mismatch only shows when the GPU box reboots.
+      - name: NVIDIA smoke test
+        if: matrix.flavor == 'nvidia'
+        run: ./tools/scripts/smoke-test-nvidia.sh "${{ env.FLAVOR_IMAGE }}:${{ env.DEFAULT_TAG }}"
 
       # Tag for registry
       - name: Tag for registry
         run: |
           for tag in ${{ steps.metadata.outputs.tags }}; do
-            podman tag ${{ env.IMAGE_NAME }}:${{ env.DEFAULT_TAG }} ${{ env.IMAGE_NAME }}:$tag
+            podman tag ${{ env.FLAVOR_IMAGE }}:${{ env.DEFAULT_TAG }} ${{ env.FLAVOR_IMAGE }}:$tag
           done
 
       # Build the K3s flavor on top of the freshly-built base. buildah picks
@@ -181,6 +209,7 @@ jobs:
       # registry round-trip needed. Containerfile.k3s honors BASE_IMAGE as
       # its FROM, so we just point at the local tag.
       - name: Build K3s flavor image
+        if: matrix.k3s
         id: build_image_k3s
         uses: redhat-actions/buildah-build@7a95fa7ee0f02d552a32753e7414641a04307056 # v2
         with:
@@ -194,6 +223,7 @@ jobs:
           oci: false
 
       - name: Tag K3s flavor for registry
+        if: matrix.k3s
         run: |
           for tag in ${{ steps.metadata.outputs.tags }}; do
             podman tag ${{ env.IMAGE_NAME }}-k3s:${{ env.DEFAULT_TAG }} ${{ env.IMAGE_NAME }}-k3s:$tag
@@ -235,7 +265,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Push To GHCR (base)
+      - name: Push To GHCR (${{ matrix.flavor }})
         uses: redhat-actions/push-to-registry@5ed88d269cf581ea9ef6dd6806d01562096bee9c # v2
         if: github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
         id: push
@@ -244,14 +274,14 @@ jobs:
           REGISTRY_PASSWORD: ${{ github.token }}
         with:
           registry: ${{ env.IMAGE_REGISTRY }}
-          image: ${{ env.IMAGE_NAME }}
+          image: ${{ env.FLAVOR_IMAGE }}
           tags: ${{ steps.metadata.outputs.tags }}
           username: ${{ env.REGISTRY_USER }}
           password: ${{ env.REGISTRY_PASSWORD }}
 
       - name: Push To GHCR (K3s flavor)
         uses: redhat-actions/push-to-registry@5ed88d269cf581ea9ef6dd6806d01562096bee9c # v2
-        if: github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+        if: matrix.k3s && github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
         id: push_k3s
         env:
           REGISTRY_USER: ${{ github.actor }}
@@ -277,7 +307,9 @@ jobs:
           COSIGN_EXPERIMENTAL: false
           COSIGN_PRIVATE_KEY: ${{ secrets.SIGNING_SECRET }}
         run: |
-          for image in "${{ env.IMAGE_NAME }}" "${{ env.IMAGE_NAME }}-k3s"; do
+          images=("${{ env.FLAVOR_IMAGE }}")
+          if [ "${{ matrix.k3s }}" = "true" ]; then images+=("${{ env.FLAVOR_IMAGE }}-k3s"); fi
+          for image in "${images[@]}"; do
             FULL="${{ env.IMAGE_REGISTRY }}/${image}"
             for tag in ${{ steps.metadata.outputs.tags }}; do
               echo ">>> cosign sign ${FULL}:${tag}"
