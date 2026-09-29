@@ -3,7 +3,10 @@ export default_tag := env("DEFAULT_TAG", "stable")
 # Registry the published, signed images live in. Used by build-raw-ghcr so a disk
 # image written to real hardware gets an origin that can actually be updated.
 export registry := env("REGISTRY", "ghcr.io/dx4homelab")
-export bib_image := env("BIB_IMAGE", "quay.io/centos-bootc/bootc-image-builder:latest@sha256:903c01d110b8533f8891f07c69c0ba2377f8d4bc7e963311082b7028c04d529d")
+# bib moved from quay.io/centos-bootc to ghcr.io/osbuild (quay :latest froze 2026-06). The old
+# pins cannot build ISOs from current uCore: bootupd 0.2.35 moved EFI payloads to /usr/lib/efi
+# (old bib: KeyError 'vendor'), and the image's disk.yaml uses mkfs_options (2026-06 bib rejects it).
+export bib_image := env("BIB_IMAGE", "ghcr.io/osbuild/bootc-image-builder:latest@sha256:937bce2380bdecd1d18141e346e2ad21bc0ba7960348f63f1362941fef64c14a")
 
 alias build-vm := build-qcow2
 alias rebuild-vm := rebuild-qcow2
@@ -124,6 +127,26 @@ build-vm-k3s $tag=default_tag: && (_build-bib ("localhost/" + image_name + "-k3s
 # Force-rebuild the container image AND the K3s QCOW2 disk image
 [group('Build K3s Flavor')]
 rebuild-vm-k3s $tag=default_tag: (build-k3s tag) && (_build-bib ("localhost/" + image_name + "-k3s") tag "qcow2" "iso/disk.toml")
+
+# Build the NVIDIA flavor (server4home-nvidia): the same Containerfile on the
+# ucore-hci:stable-nvidia base (open kernel modules + nvidia-container-toolkit).
+[group('Build NVIDIA Flavor')]
+build-nvidia $tag=default_tag:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    podman build \
+        --build-arg BASE_FLAVOR=nvidia \
+        --pull=newer \
+        --tag "${image_name}-nvidia:${tag}" \
+        .
+
+# Build the NVIDIA installer ISO (target disk picked at install time, see iso/iso-nvidia.toml)
+[group('Build NVIDIA Flavor')]
+build-iso-nvidia $target_image=("localhost/" + image_name + "-nvidia") $tag=default_tag: && (_build-bib target_image tag "iso" "iso/iso-nvidia.toml")
+
+# Force-rebuild the NVIDIA container image AND its installer ISO
+[group('Build NVIDIA Flavor')]
+rebuild-iso-nvidia $tag=default_tag: (build-nvidia tag) && (_build-bib ("localhost/" + image_name + "-nvidia") tag "iso" "iso/iso-nvidia.toml")
 
 # Ensure a project virtualenv exists at ./.venv with the deploy runner AND
 # the helm/kubectl binaries the runner shells out to. All three live under

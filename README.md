@@ -6,6 +6,13 @@ A template for building custom bootc operating system images based on the lesson
 
 > **K3s/Rancher flavor docs:** see [docs/k3s-rancher-vms.md](docs/k3s-rancher-vms.md) for the build → deploy → operate guide (with diagrams).
 
+> **NVIDIA flavor (`ghcr.io/dx4homelab/server4home-nvidia`):** the same `Containerfile` built with
+> `BASE_FLAVOR=nvidia` on `ucore-hci:stable-nvidia` — NVIDIA open kernel modules (required for
+> Blackwell / RTX 50xx), nvidia-container-toolkit + CDI (`podman run --device nvidia.com/gpu=all …`),
+> plus everything in the plain image. Build locally with `just build-nvidia`; installer ISO with
+> `just build-iso-nvidia` — the target disk is picked at install time, see
+> [iso/iso-nvidia.toml](iso/iso-nvidia.toml).
+
 This template uses the **multi-stage build architecture** from , combining resources from multiple OCI containers for modularity and maintainability. See the [Architecture](#architecture) section below for details.
 
 **Unlike previous templates, you are not modifying Bluefin and making changes.**: You are assembling your own Bluefin in the same exact way that Bluefin, Aurora, and Bluefin LTS are built. This is way more flexible and better for everyone since the image-agnostic and desktop things we love about Bluefin lives in @projectbluefin/common.
